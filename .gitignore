@@ -1,0 +1,126 @@
+# Ignore virtualenv, Python artifacts, and local data
+__pycache__/
+*.py[cod]
+*.so
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Ignore the rag virtual environment and related files
+bot/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+*.manifest
+*.spec
+
+# Byte-compiled / cache
+*.log
+*.bak
+*.swp
+*.tmp
+*.cache
+.cache/
+.ipynb_checkpoints/
+.mypy_cache/
+.pytest_cache/
+.dmypy.json
+.pyre/
+.pytype/
+
+# -----------------------------
+# PROJECT FILES
+# -----------------------------
+# Local data
+data/
+figures/
+outputs/
+checkpoints/
+embeddings/
+vector_store/
+storage/
+tmp/
+temp_*/
+
+# PDF / image artifacts
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.gif
+*.svg
+
+# Model & LLM artifacts
+*.jsonl
+*.ckpt
+*.h5
+*.pt
+*.bin
+*.onnx
+*.npy
+*.npz
+
+# LangChain or Qdrant local persistence
+.qdrant/
+qdrant_storage/
+index_store/
+vector_index/
+.db/
+*.sqlite
+*.parquet
+
+# -----------------------------
+# LOGGING & DEBUGGING
+# -----------------------------
+logs/
+*.log
+*.out
+*.err
+
+# -----------------------------
+# JUPYTER / NOTEBOOKS
+# -----------------------------
+.ipynb_checkpoints/
+*.ipynb_convert/
+notebooks/.ipynb_checkpoints/
+notebooks/tmp/
+
+# -----------------------------
+# OS / EDITOR FILES
+# -----------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.code-workspace
+
+# -----------------------------
+# TESTS & EXPERIMENTS
+# -----------------------------
+test_output/
+coverage/
+htmlcov/
+*.cover
+*.coverage
+*.pytest_cache/
+*.tox/
+.tox/
+.nox/
+
+# -----------------------------
+# BACKUPS
+# -----------------------------
+*.bak
+*.old
+*.orig
+*.rej
+*.swo
+*.swp
