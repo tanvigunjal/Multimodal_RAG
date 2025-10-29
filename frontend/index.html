@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Document RAG Assistant</title>
+  <link rel="stylesheet" href="style.css"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/showdown/2.1.0/showdown.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+  <div class="app-frame">
+    <div class="app-shell">
+
+      <aside class="sidebar" id="left-sidebar">
+        <div class="brand-row">
+          <h1 class="brand">CHAT A.I</h1>
+          <button class="icon-btn" id="sidebar-toggle-btn" title="Collapse Sidebar">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+
+        <div class="primary-actions">
+          <button id="new-chat-btn" class="cta-btn">
+            <i class="fa-solid fa-plus"></i><span class="sidebar-label">New chat</span>
+          </button>
+          <button class="icon-btn" id="search-btn" title="Search Chats">
+            <i class="fa-solid fa-magnifying-glass"></i>
+          </button>
+        </div>
+
+        <section class="sidebar-card" id="history-section">
+          <div class="card-title">
+            <span class="sidebar-label">Your Chats</span>
+            <button class="link-btn" id="clear-history-btn">Clear All</button>
+          </div>
+          <ul id="history-list" class="history-list"></ul>
+        </section>
+
+        <section class="sidebar-card upload-card" id="upload-section">
+          <div class="card-title">
+            
+          </div>
+          <div id="drop-zone" class="drop-zone">
+            <i class="fas fa-cloud-upload-alt"></i>
+            <p>Drag & drop files here or click to select</p>
+            <div class="tooltip">You can upload a PDF or a ZIP file with PDFs.</div>
+            <input type="file" id="file-input" multiple style="display: none;" accept=".pdf,.zip">
+          </div>
+          <button id="upload-button" class="btn" style="display: none;">Upload</button>
+          <div id="upload-status" class="muted"></div>
+        </section>
+      </aside>
+
+      <main class="chat-pane">
+        <header class="chat-toolbar">
+          <div class="crumb">Active Chat</div>
+          <div class="toolbar-actions">
+            <div class="tool">
+              <span class="tool-label">Sources</span>
+              <label class="switch" title="Toggle Rich Response with Sources">
+                <input type="checkbox" id="rich-response-toggle" checked/>
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="tool">
+              <span class="tool-label">Dark mode</span>
+              <label class="switch" title="Toggle Dark Mode">
+                <input type="checkbox" id="theme-toggle"/>
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+        </header>
+
+        <div class="chat-window" id="chat-window">
+          </div>
+
+        <footer class="composer">
+          <form id="chat-form" class="composer-form">
+            <input
+              type="text"
+              id="chat-input"
+              placeholder="Ask a question about your documents…"
+              required
+              autocomplete="off"
+            />
+            <button type="submit" id="send-btn" aria-label="Send Message">
+              <i class="fas fa-paper-plane"></i>
+            </button>
+          </form>
+        </footer>
+      </main>
+
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.11/purify.min.js"></script>
+  
+  <script type="module" src="js/app.js"></script>
+
+  <div id="share-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Share Chat</h2>
+        <button id="close-modal-btn" class="icon-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>Anyone with the link can view this chat. This link is tied to your browser's local storage.</p>
+        <div class="share-link-container">
+          <input type="text" id="share-link-input" readonly>
+          <button id="copy-link-btn" class="btn"><i class="fas fa-copy"></i> Copy Link</button>
+        </div>
+        <hr class="modal-divider">
+        <p>Alternatively, you can copy the full chat content to your clipboard.</p>
+        <div class="share-link-container">
+          <button id="copy-chat-btn" class="btn"><i class="fas fa-paste"></i> Copy Chat to Clipboard</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
