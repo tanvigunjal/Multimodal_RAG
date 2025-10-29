@@ -1,0 +1,408 @@
+# api/endpoints.py
+from __future__ import annotations
+
+from functools import lru_cache
+import io
+import os
+import uuid
+import zipfile
+import hashlib
+import mimetypes 
+from pathlib import Path
+from typing import List, Optional, AsyncGenerator, Dict
+
+from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException, Header, status, Query, Depends
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from pydantic import BaseModel
+
+from src.utils.logger import get_logger
+from src.core.agent import retrieval_agent, StreamingRAGResponse
+from src.ingestion.orchestrator import AgenticIngestionOrchestrator
+from src.core.tools import TitleGenerator
+
+router = APIRouter(prefix="/v1", tags=["Ingestion"])
+logger = get_logger(__name__)
+
+# In-memory store for job statuses
+JOB_STATUSES: Dict[str, Dict[str, str]] = {}
+
+# ------------------------ Config ------------------------
+
+ALLOWED_CONTENT_TYPES = {
+    "application/pdf",
+    "text/plain",
+    "text/markdown",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+}
+MAX_UPLOAD_SIZE_MB = 100
+MAX_ZIP_SIZE_MB = 500
+MAX_FILES_PER_ZIP = 500
+
+# ------------------------ Models ------------------------
+
+class JobInfo(BaseModel):
+    job_id: str
+    file_name: str
+    saved_path: str
+    sha256: str
+
+class UploadResponse(BaseModel):
+    message: str
+    jobs: List[JobInfo]
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    file_name: str
+
+class HealthResponse(BaseModel):
+    status: str = "ok"
+
+class TitleResponse(BaseModel):
+    title: str
+
+# ------------------------ Helpers ------------------------
+
+def _dirs() -> tuple[Path, Path]:
+    root = Path.cwd()
+    uploads = root / "data" / "uploads"
+    figures = root / "figures"
+    uploads.mkdir(parents=True, exist_ok=True)
+    figures.mkdir(parents=True, exist_ok=True)
+    return uploads, figures
+
+def _safe_name(name: str) -> str:
+    return os.path.basename(name).replace("\x00", "")
+
+def _sha256_bytes(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+def _sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def _limit(raw: bytes, mb: int, label: str):
+    if len(raw) > mb * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail=f"{label} exceeds {mb} MB")
+
+def _check_type(up: UploadFile):
+    if up.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                            detail=f"Unsupported content type: {up.content_type}")
+
+def _zip_safe_path(root: Path, member: str) -> Path:
+    target = (root / _safe_name(os.path.basename(member))).resolve()
+    if not str(target).startswith(str(root.resolve())):
+        raise HTTPException(status_code=400, detail="Unsafe path in ZIP")
+    return target
+
+@lru_cache(maxsize=1)
+def get_title_generator() -> TitleGenerator:
+
+    """
+
+    Dependency injector for the TitleGenerator.
+
+    Uses lru_cache to ensure a single instance is created.
+
+    """
+
+    return TitleGenerator()
+
+# --- MODIFIED: Background task is now async and uses the orchestrator ---
+async def _process_bg(job_id: str, doc_path: str, figures_dir: str, file_name: str):
+    """Asynchronous background task to process a single document via the orchestrator."""
+    try:
+        JOB_STATUSES[job_id] = {"status": "PROCESSING", "file_name": file_name}
+        logger.info(f"[BG] Orchestrator starting for: {doc_path}")
+        
+        # Instantiate and run the agentic orchestrator
+        orchestrator = AgenticIngestionOrchestrator(doc_path, figures_dir)
+        await orchestrator.run()
+        
+        JOB_STATUSES[job_id]["status"] = "SUCCESS"
+        logger.info(f"[BG] Orchestrator finished for: {doc_path}")
+    except Exception as e:
+        logger.error(f"[BG] Error processing {doc_path}: {e}", exc_info=True)
+        if job_id in JOB_STATUSES:
+            JOB_STATUSES[job_id]["status"] = "FAILED"
+
+# ------------------------ Endpoints ------------------------
+
+@router.get("/health", response_model=HealthResponse)
+def health() -> HealthResponse:
+    return HealthResponse()
+
+@router.post("/upload-documents", response_model=UploadResponse)
+async def upload_documents(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(..., description="PDF/TXT/MD/DOCX"),
+):
+    try:
+        uploads_dir, figures_dir = _dirs()
+        jobs: List[JobInfo] = []
+
+        for up in files:
+            _check_type(up)
+            raw = await up.read()
+            await up.close()
+            _limit(raw, MAX_UPLOAD_SIZE_MB, f"File {up.filename}")
+
+            sha = _sha256_bytes(raw)
+            subdir = uploads_dir / sha[:8]
+            subdir.mkdir(parents=True, exist_ok=True)
+
+            saved = subdir / f"{_safe_name(up.filename)}"
+            saved.write_bytes(raw)
+
+            job_id = uuid.uuid4().hex
+            safe_filename = _safe_name(up.filename)
+            JOB_STATUSES[job_id] = {"status": "QUEUED", "file_name": safe_filename}
+            
+            # FastAPI correctly handles adding async functions as background tasks
+            background_tasks.add_task(_process_bg, job_id, str(saved), str(figures_dir), safe_filename)
+
+            jobs.append(JobInfo(job_id=job_id, file_name=safe_filename,
+                                saved_path=str(saved), sha256=sha))
+            logger.info(f"Queued {job_id} for {safe_filename} ({sha[:12]}...)")
+
+        if not jobs:
+            raise HTTPException(status_code=400, detail="No valid files uploaded.")
+        return UploadResponse(message=f"{len(jobs)} file(s) queued.", jobs=jobs)
+    except Exception as e:
+        logger.error(f"Error during document upload: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "An unexpected error occurred during file upload."},
+        )
+
+@router.post("/upload-zip", response_model=UploadResponse)
+async def upload_zip(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(..., description="ZIP with allowed files"),
+):
+    uploads_dir, figures_dir = _dirs()
+    raw_zip = await file.read()
+    await file.close()
+    _limit(raw_zip, MAX_ZIP_SIZE_MB, "ZIP")
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw_zip))
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Corrupted ZIP")
+
+    jobs: List[JobInfo] = []
+    batch_root = uploads_dir / f"zip_{uuid.uuid4().hex}"
+    batch_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        infos = zf.infolist()
+        if len(infos) > MAX_FILES_PER_ZIP:
+            raise HTTPException(status_code=400, detail=f"ZIP has > {MAX_FILES_PER_ZIP} entries")
+
+        for info in infos:
+            if info.is_dir(): continue
+            name = info.filename.lower()
+            if not (name.endswith(".pdf") or name.endswith(".txt") or name.endswith(".md") or name.endswith(".docx")):
+                continue
+
+            target = _zip_safe_path(batch_root, info.filename)
+            with zf.open(info) as src, target.open("wb") as dst:
+                content = src.read()
+                _limit(content, MAX_UPLOAD_SIZE_MB, f"File {info.filename} in ZIP")
+                dst.write(content)
+
+            sha = _sha256_file(target)
+            job_id = uuid.uuid4().hex
+            safe_filename = _safe_name(info.filename)
+            JOB_STATUSES[job_id] = {"status": "QUEUED", "file_name": safe_filename}
+            background_tasks.add_task(_process_bg, job_id, str(target), str(figures_dir), safe_filename)
+
+            jobs.append(JobInfo(job_id=job_id, file_name=safe_filename,
+                                saved_path=str(target), sha256=sha))
+            logger.info(f"Queued {job_id} for {safe_filename} ({sha[:12]}...)")
+    finally:
+        zf.close()
+
+    if not jobs:
+        raise HTTPException(status_code=400, detail="No valid files found in ZIP.")
+    return UploadResponse(message=f"{len(jobs)} file(s) queued from ZIP.", jobs=jobs)
+
+
+# ------------------------ Query Endpoints (Unchanged) ------------------------
+# api/endpoints.py
+# ... (keep all existing imports)
+import json
+from src.core.agent import retrieval_agent, StreamingRAGResponse
+
+# ... (keep all other code like router, models, helpers)
+
+# ------------------------ Query Endpoints (Revised) ------------------------
+
+class QueryRequest(BaseModel):
+    query: str
+
+# === Endpoint 1: Rich, Non-Streaming (Invoke) ===
+@router.post("/query/invoke", summary="Get a final answer with sources (non-streaming)")
+async def query_invoke_endpoint(request: QueryRequest):
+    """
+    Receives a query and returns a single JSON response containing the complete
+    answer and the source documents. This is a non-streaming, "invoke" style endpoint.
+    """
+    if not request.query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+    try:
+        # The agent's run method handles the entire workflow
+        streaming_response: StreamingRAGResponse = retrieval_agent.run(request.query)
+        
+        # Consume the stream to get the final response object
+        response_data = streaming_response.get_response()
+        
+        sources = []
+        for node in response_data["source_nodes"]:
+            md = node.metadata or {}
+            source_data = {
+                "type": md.get("element_type"),
+                "file_name": md.get("file_name"),
+                "page_number": md.get("page_number"),
+                "content": md.get("table_html") if md.get("element_type") == "table" else None,
+                "image_path": os.path.basename(md.get("image_path")) if md.get("element_type") == "image" and md.get("image_path") else None,
+            }
+            sources.append(source_data)
+        
+        rich_response = {
+            "answer": response_data["response"],
+            "sources": sources
+        }
+        return JSONResponse(content=rich_response)
+    except Exception as e:
+        logger.error(f"Error in /query/invoke endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+
+
+# === Endpoint 2: Simple Text Streaming ===
+async def stream_text_generator(response: StreamingRAGResponse) -> AsyncGenerator[str, None]:
+    """Generator for the simple text streaming response."""
+    for token in response.response_gen:
+        yield token
+
+@router.post("/query/stream-text", summary="Get a simple streaming text answer")
+async def query_stream_text_endpoint(request: QueryRequest):
+    """
+    Receives a query and returns a simple streaming text response (media_type="text/plain").
+    """
+    if not request.query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+    try:
+        # Use the unified retrieval agent
+        streaming_response = retrieval_agent.run(request.query)
+        return StreamingResponse(stream_text_generator(streaming_response), media_type="text/plain")
+    except Exception as e:
+        logger.error(f"Error in /query/stream-text endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+
+
+# === Endpoint 3: Rich, Streaming (Server-Sent Events) ===
+async def stream_rich_generator(response: StreamingRAGResponse) -> AsyncGenerator[str, None]:
+    """
+    Generator for the rich streaming response using Server-Sent Events (SSE).
+    Yields events for sources, tokens, and the end of the stream.
+    """
+    # 1. Yield a 'sources' event with all source documents
+    sources = []
+    for node in response.source_nodes:
+        md = node.metadata or {}
+        sources.append({
+            "type": md.get("element_type"),
+            "file_name": md.get("file_name"),
+            "page_number": md.get("page_number"),
+            "content": md.get("table_html") if md.get("element_type") == "table" else None,
+            "image_path": os.path.basename(md.get("image_path")) if md.get("element_type") == "image" and md.get("image_path") else None,
+        })
+    
+    # The data field must be a string, so we dump the list to a JSON string
+    sources_json = json.dumps(sources)
+    yield f"event: sources\ndata: {sources_json}\n\n"
+
+    # 2. Yield 'token' events for each piece of the answer
+    for token in response.response_gen:
+        # Escape newlines in the token data to conform to the SSE spec
+        data = json.dumps(token)
+        yield f"event: token\ndata: {data}\n\n"
+
+    # 3. Yield an 'end' event to signal completion
+    yield "event: end\ndata: Stream ended\n\n"
+
+@router.get("/query/stream-rich", summary="Get a rich streaming answer with sources (SSE)")
+async def query_stream_rich_endpoint(query: str = Query(..., min_length=1)):
+    """
+    Receives a query via URL parameter and returns a rich streaming response
+    using Server-Sent Events. This endpoint is designed for use with EventSource.
+    Events include:
+    - `sources`: A single event containing all source document metadata.
+    - `token`: A series of events, each containing a piece of the answer.
+    - `end`: A final event to signal the end of the stream.
+    """
+    if not query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+    try:
+        streaming_response = retrieval_agent.run(query)
+        return StreamingResponse(stream_rich_generator(streaming_response), media_type="text/event-stream")
+    except Exception as e:
+        logger.error(f"Error in /query/stream-rich endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+
+@router.post("/query/summarize", response_model=TitleResponse)
+async def summarize_query_endpoint(
+    request: QueryRequest,
+    title_generator: TitleGenerator = Depends(get_title_generator)
+):
+    """
+    Receives a query and returns a three-word title.
+    """
+    if not request.query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+    try:
+        title = await title_generator.generate(request.query)
+        return TitleResponse(title=title)
+    except Exception as e:
+        logger.error(f"Error in /query/summarize endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+
+@router.get("/image", summary="Serve an image from the figures directory")
+async def get_image(path: str = Query(..., description="The filename of the image to retrieve")):
+    """
+    Serves an image from the 'figures' directory. This endpoint is protected
+    against directory traversal attacks.
+    """
+    try:
+        _, figures_dir = _dirs()
+        
+        # Security: Sanitize filename and prevent directory traversal
+        safe_filename = _safe_name(path)
+        if ".." in safe_filename or safe_filename.startswith("/"):
+            raise HTTPException(status_code=400, detail="Invalid filename.")
+            
+        image_path = figures_dir / safe_filename
+        
+        if not image_path.is_file():
+            logger.warning(f"Image not found at path: {image_path}")
+            raise HTTPException(status_code=404, detail="Image not found.")
+        
+        # Infer MIME type from filename
+        mime_type, _ = mimetypes.guess_type(image_path)
+        if not mime_type or not mime_type.startswith("image/"):
+            mime_type = "application/octet-stream" # Fallback
+            
+        return FileResponse(str(image_path), media_type=mime_type)
+        
+    except HTTPException as http_exc:
+        # Re-raise HTTP exceptions to let FastAPI handle them
+        raise http_exc
+    except Exception as e:
+        logger.error(f"Error serving image '{path}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An internal error occurred while serving the image.")
