@@ -12,6 +12,8 @@ dist/
 # Ignore the rag virtual environment and related files
 bot/
 
+.env
+
 # Distribution / packaging
 build/
 dist/
