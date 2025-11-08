@@ -14,9 +14,12 @@ export function renderBotMessage(contentDiv, { text = '', sources = [], streamin
   // Clear previous content
   contentDiv.innerHTML = '';
 
+  // Only handle sources once
+  const uniqueSources = [...new Map(sources.map(s => [`${s.file_name}:${s.page_number}`, s])).values()];
+  
   // 1. Render Visuals First (if available)
-  const images = sources.filter(s => s.type === 'image' && s.image_path);
-  const tables = sources.filter(s => s.type === 'table' && s.content);
+  const images = uniqueSources.filter(s => s.type === 'image' && s.image_path);
+  const tables = uniqueSources.filter(s => s.type === 'table' && s.content);
 
   if (images.length > 0 || tables.length > 0) {
     const visualsContainer = document.createElement('div');
@@ -31,13 +34,10 @@ export function renderBotMessage(contentDiv, { text = '', sources = [], streamin
         const imageUrl = `${API_BASE_URL}/image?path=${encodeURIComponent(source.image_path)}`;
         const img = document.createElement('img');
         img.src = imageUrl;
-        img.alt = `Image from ${source.file_name}`;
+        img.alt = 'Image';
         img.loading = 'lazy';
         img.addEventListener('click', () => openImagePopup(imageUrl));
-        const caption = document.createElement('figcaption');
-        caption.textContent = `${source.file_name} (p. ${source.page_number})`;
         card.appendChild(img);
-        card.appendChild(caption);
         grid.appendChild(card);
       });
       visualsContainer.appendChild(grid);
@@ -46,9 +46,7 @@ export function renderBotMessage(contentDiv, { text = '', sources = [], streamin
     if (tables.length > 0) {
       tables.forEach(source => {
         const item = document.createElement('div');
-        item.className = 'source-item';
-        // We are removing the title from here to match the new design
-        // item.innerHTML = `<strong>Table from: ${source.file_name} (p. ${source.page_number})</strong>`;
+        item.className = 'source-item table-container';
         const tableContainer = document.createElement('div');
         tableContainer.innerHTML = DOMPurify.sanitize(source.content);
         item.appendChild(tableContainer);
@@ -59,7 +57,12 @@ export function renderBotMessage(contentDiv, { text = '', sources = [], streamin
   }
 
   // 2. Render the Answer Text
-  const cleanedText = text.replace(/\[\d+\]/g, '').trim();
+  // Remove line containing Sources:
+  const cleanedText = text
+    .replace(/Sources:.*\n?/, '') // Remove "Sources:" line
+    .replace(/.*\.pdf.*\n?/g, '') // Remove any line containing .pdf
+    .replace(/\[\d+\]/g, '')
+    .trim();
   const answerHtml = DOMPurify.sanitize(marked.parse(cleanedText));
   const answerDiv = document.createElement('div');
   answerDiv.className = 'answer-text';
@@ -70,7 +73,6 @@ export function renderBotMessage(contentDiv, { text = '', sources = [], streamin
   contentDiv.appendChild(answerDiv);
 
   // 3. Render the Collapsible Sources Section
-  const uniqueSources = [...new Map(sources.map(s => [`${s.file_name}:${s.page_number}`, s])).values()];
   if (uniqueSources.length > 0) {
     const sourcesWrapper = document.createElement('div');
     sourcesWrapper.className = 'sources-accordion';
@@ -92,7 +94,7 @@ export function renderBotMessage(contentDiv, { text = '', sources = [], streamin
       const item = document.createElement('div');
       item.className = 'source-list-item';
       item.innerHTML = `
-        <i class="fas fa-file-alt"></i>
+        <i class="fas fa-${source.type === 'image' ? 'image' : 'file-alt'}"></i>
         <span class="source-text">${source.file_name}, page ${source.page_number}</span>
       `;
       sourceList.appendChild(item);
