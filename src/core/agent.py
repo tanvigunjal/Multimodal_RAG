@@ -134,7 +134,7 @@ class RetrievalAgent:
         context_str = self.formatter.format_docs(final_docs)
         
         # Step 5: Generate the response
-        prompt = TEXT_QA_PROMPT.partial(max_words="250")
+        prompt = TEXT_QA_PROMPT.partial(max_words="500")
         
         chain = (
             prompt
