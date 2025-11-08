@@ -33,24 +33,44 @@ class DocumentChunker:
         current_section = "Introduction"
         chunk_index = 0
 
+        text_buffer = []
+        current_page = None
+
         for i, element in enumerate(elements):
             is_last = i == len(elements) - 1
+            element_page = getattr(element.metadata, "page_number", None)
 
             if isinstance(element, Title):
                 current_section = element.text
 
             if isinstance(element, (Text, Title)):
-                text_buffer.append(element.text)
+                # Keep track of the text and its page number
+                text_buffer.append({
+                    "text": element.text,
+                    "page": element_page or current_page
+                })
+                current_page = element_page or current_page
 
             # Flush buffer for non-text elements or at the end of the document
             if (not isinstance(element, (Text, Title))) or is_last:
                 if text_buffer:
-                    full_text = "\n\n".join(text_buffer)
-                    for text_chunk in self.text_splitter.split_text(full_text):
-                        meta = self._create_metadata(element, chunk_index, "text", current_section)
-                        meta["raw_content"] = text_chunk
-                        chunks.append(meta)
-                        chunk_index += 1
+                    # Group text by page number
+                    page_groups = {}
+                    for item in text_buffer:
+                        page = item["page"]
+                        if page not in page_groups:
+                            page_groups[page] = []
+                        page_groups[page].append(item["text"])
+                    
+                    # Process each page group separately
+                    for page, texts in page_groups.items():
+                        full_text = "\n\n".join(texts)
+                        for text_chunk in self.text_splitter.split_text(full_text):
+                            meta = self._create_metadata(element, chunk_index, "text", current_section)
+                            meta["structural_metadata"]["page_number"] = page
+                            meta["raw_content"] = text_chunk
+                            chunks.append(meta)
+                            chunk_index += 1
                     text_buffer = []
 
             # Handle non-text elements using pre-enriched data
@@ -76,7 +96,7 @@ class DocumentChunker:
         
         return {
             "chunk_id": chunk_id,
-            "document_metadata": {"file_path": self.doc_path, "file_name": self.doc_name},
+            "document_metadata": {"file_path": self.doc_path, "file_name": self.doc_name}, 
             "structural_metadata": {"page_number": page, "section_heading": section, "element_type": el_type},
             "multimodal_metadata": {
                 "figure_id": f"{el_type.capitalize()}_{page}_{index}" if page else f"{el_type.capitalize()}_{index}",

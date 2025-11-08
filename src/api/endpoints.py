@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import asyncio
 import io
 import os
 import uuid
@@ -13,6 +14,7 @@ from typing import List, Optional, AsyncGenerator, Dict
 
 from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException, Header, status, Query, Depends
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from enum import Enum
 from pydantic import BaseModel
 
 from src.utils.logger import get_logger
@@ -22,6 +24,13 @@ from src.core.tools import TitleGenerator
 
 router = APIRouter(prefix="/v1", tags=["Ingestion"])
 logger = get_logger(__name__)
+
+class JobStatus(str, Enum):
+    QUEUED = "QUEUED"
+    PROCESSING = "PROCESSING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    DUPLICATE = "DUPLICATE"
 
 # In-memory store for job statuses
 JOB_STATUSES: Dict[str, Dict[str, str]] = {}
@@ -52,8 +61,10 @@ class UploadResponse(BaseModel):
 
 class JobStatusResponse(BaseModel):
     job_id: str
-    status: str
+    status: JobStatus
     file_name: str
+    progress: str = "0"  # Keep as string for consistency with frontend
+    current_step: str = ""
 
 class HealthResponse(BaseModel):
     status: str = "ok"
@@ -117,25 +128,91 @@ def get_title_generator() -> TitleGenerator:
 async def _process_bg(job_id: str, doc_path: str, figures_dir: str, file_name: str):
     """Asynchronous background task to process a single document via the orchestrator."""
     try:
-        JOB_STATUSES[job_id] = {"status": "PROCESSING", "file_name": file_name}
+        JOB_STATUSES[job_id] = {
+            "job_id": job_id,
+            "status": JobStatus.PROCESSING,
+            "file_name": file_name,
+            "progress": "0",
+            "current_step": "Starting document processing"
+        }
         logger.info(f"[BG] Orchestrator starting for: {doc_path}")
+        
+        # Update progress for duplicate check
+        JOB_STATUSES[job_id].update({
+            "job_id": job_id,
+            "progress": "10",
+            "current_step": "Checking for duplicates"
+        })
         
         # Instantiate and run the agentic orchestrator
         orchestrator = AgenticIngestionOrchestrator(doc_path, figures_dir)
-        await orchestrator.run()
         
-        JOB_STATUSES[job_id]["status"] = "SUCCESS"
-        logger.info(f"[BG] Orchestrator finished for: {doc_path}")
+        def progress_callback(step: str, progress: int):
+            if job_id in JOB_STATUSES:
+                JOB_STATUSES[job_id].update({
+                    "job_id": job_id,
+                    "progress": str(progress),
+                    "current_step": step
+                })
+        
+        was_processed = await orchestrator.run(progress_callback)
+        
+        if was_processed:
+            status_update = {
+                "job_id": job_id,
+                "status": JobStatus.SUCCESS,
+                "progress": "100",
+                "current_step": "Document successfully processed"
+            }
+            JOB_STATUSES[job_id].update(status_update)
+            logger.info(f"[BG] Orchestrator finished for: {doc_path}")
+            # Keep status for 1 minute
+            await asyncio.sleep(60)
+            if job_id in JOB_STATUSES and JOB_STATUSES[job_id]["status"] == JobStatus.SUCCESS:
+                del JOB_STATUSES[job_id]
+        else:
+            status_update = {
+                "job_id": job_id,
+                "status": JobStatus.DUPLICATE,
+                "progress": "100",
+                "current_step": "Document already exists in database"
+            }
+            JOB_STATUSES[job_id].update(status_update)
+            logger.info(f"[BG] File already exists in database: {doc_path}")
+            # Keep status for 1 minute
+            await asyncio.sleep(60)
+            if job_id in JOB_STATUSES and JOB_STATUSES[job_id]["status"] == JobStatus.DUPLICATE:
+                del JOB_STATUSES[job_id]
     except Exception as e:
         logger.error(f"[BG] Error processing {doc_path}: {e}", exc_info=True)
         if job_id in JOB_STATUSES:
-            JOB_STATUSES[job_id]["status"] = "FAILED"
+            status_update = {
+                "job_id": job_id,
+                "status": JobStatus.FAILED,
+                "progress": "0",
+                "current_step": f"Error: {str(e)}"
+            }
+            JOB_STATUSES[job_id].update(status_update)
+            # Keep status for 1 minute
+            await asyncio.sleep(60)
+            if job_id in JOB_STATUSES and JOB_STATUSES[job_id]["status"] == JobStatus.FAILED:
+                del JOB_STATUSES[job_id]
 
 # ------------------------ Endpoints ------------------------
 
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse()
+
+@router.get("/job-status/{job_id}", response_model=JobStatusResponse)
+async def get_job_status(job_id: str):
+    """Get the status of a specific upload job."""
+    if job_id not in JOB_STATUSES:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    status = JOB_STATUSES[job_id]
+    logger.info(f"Status request for job {job_id}: {status}")
+    return JobStatusResponse(**status)
 
 @router.post("/upload-documents", response_model=UploadResponse)
 async def upload_documents(
@@ -161,7 +238,13 @@ async def upload_documents(
 
             job_id = uuid.uuid4().hex
             safe_filename = _safe_name(up.filename)
-            JOB_STATUSES[job_id] = {"status": "QUEUED", "file_name": safe_filename}
+            JOB_STATUSES[job_id] = {
+                "job_id": job_id,
+                "status": JobStatus.QUEUED, 
+                "file_name": safe_filename,
+                "progress": "0",
+                "current_step": "Queued for processing"
+            }
             
             # FastAPI correctly handles adding async functions as background tasks
             background_tasks.add_task(_process_bg, job_id, str(saved), str(figures_dir), safe_filename)
@@ -219,7 +302,13 @@ async def upload_zip(
             sha = _sha256_file(target)
             job_id = uuid.uuid4().hex
             safe_filename = _safe_name(info.filename)
-            JOB_STATUSES[job_id] = {"status": "QUEUED", "file_name": safe_filename}
+            JOB_STATUSES[job_id] = {
+                "job_id": job_id,
+                "status": JobStatus.QUEUED, 
+                "file_name": safe_filename,
+                "progress": "0",
+                "current_step": "Queued for processing"
+            }
             background_tasks.add_task(_process_bg, job_id, str(target), str(figures_dir), safe_filename)
 
             jobs.append(JobInfo(job_id=job_id, file_name=safe_filename,
@@ -233,15 +322,8 @@ async def upload_zip(
     return UploadResponse(message=f"{len(jobs)} file(s) queued from ZIP.", jobs=jobs)
 
 
-# ------------------------ Query Endpoints (Unchanged) ------------------------
-# api/endpoints.py
-# ... (keep all existing imports)
+# ------------------------ Query Endpoints ------------------------
 import json
-from src.core.agent import retrieval_agent, StreamingRAGResponse
-
-# ... (keep all other code like router, models, helpers)
-
-# ------------------------ Query Endpoints (Revised) ------------------------
 
 class QueryRequest(BaseModel):
     query: str

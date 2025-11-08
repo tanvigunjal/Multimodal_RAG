@@ -36,34 +36,59 @@ class AgenticIngestionOrchestrator:
         self.chunker = DocumentChunker(file_path, text_splitter)
         self.vector_manager = VectorStoreManager(embedding_service, vectordb_service)
 
-    async def run(self):
-        """Executes the agentic ingestion workflow."""
+    async def run(self, progress_callback=None) -> bool:
+        """Executes the agentic ingestion workflow.
         
-        # Agentic decision: Should I process this file?
+        Args:
+            progress_callback: Optional callback function(step: str, progress: int) to report progress
+        
+        Returns:
+            bool: True if the document was processed, False if it was already in the database
+        """
+        
+        def update_progress(step: str, progress: int):
+            if progress_callback:
+                progress_callback(step, progress)
+            logger.info(f"Progress: {progress}% - {step}")
+        
+        # Check for duplicates first
+        logger.info(f"Checking if document exists: {self.file_path}")
+        update_progress("Checking for duplicates", 10)
+        
         if self.vector_manager.is_document_processed(self.file_path):
             logger.warning(f"Document '{self.file_path}' has already been processed. Skipping.")
-            return
+            update_progress("Document already exists in database", 100)
+            return False
 
         logger.info(f"Agent starting ingestion for: {self.file_path}")
+        update_progress("Document is new, starting processing", 15)
 
         # === Step 1: EXTRACT (Use the extraction tool) ===
+        update_progress("Extracting document content", 20)
         raw_elements = self.extractor.extract()
         if not raw_elements:
             logger.error("Extraction failed, no elements found. Aborting pipeline.")
-            return
+            return False
+        update_progress("Content extraction complete", 40)
 
         # === Step 2: ENRICH (Use the enrichment tool concurrently) ===
+        update_progress("Enriching document content", 50)
         enriched_data = await self.enricher.enrich_elements(raw_elements)
+        update_progress("Content enrichment complete", 70)
 
         # === Step 3: CHUNK (Use the chunking tool) ===
+        update_progress("Chunking document content", 75)
         document_chunks = self.chunker.create_chunks(raw_elements, enriched_data)
         if not document_chunks:
             logger.error("Chunking produced no output. Aborting pipeline.")
-            return
+            return False
+        update_progress("Content chunking complete", 85)
 
         # === Step 4: LOAD (Use the vector store tool) ===
+        update_progress("Loading chunks into vector database", 90)
         self.vector_manager.add_chunks(document_chunks)
 
+        update_progress("Document processing complete", 100)
         logger.info(f"Agent successfully completed ingestion for: {self.file_path}")
 
 

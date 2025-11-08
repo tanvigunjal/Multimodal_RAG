@@ -46,7 +46,7 @@ def build_vectorstore() -> QdrantVectorStore:
         client.create_collection(
             collection_name=collection_name,
             vectors_config=models.VectorParams(
-                size=settings.embeddings.embedding_dim,
+                size=settings.vector_store.vector_size,
                 distance=models.Distance.COSINE
             ),
         )
