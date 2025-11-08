@@ -66,7 +66,7 @@ class VectorStoreManager:
         try:
             res, _ = self.vectordb_service.client.scroll(
                 collection_name=self.vectordb_service.collection_name,
-                scroll_filter=Filter(must=[FieldCondition(key="file_path", match=MatchValue(value=file_path))]),
+                scroll_filter=Filter(must=[FieldCondition(key="file_name", match=MatchValue(value=file_path))]),
                 limit=1,
             )
             return bool(res)
