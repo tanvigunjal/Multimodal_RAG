@@ -14,6 +14,7 @@ from typing import List, Optional, AsyncGenerator, Dict
 
 from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException, Header, status, Query, Depends
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from fastapi.security import HTTPBearer
 from enum import Enum
 from pydantic import BaseModel
 
@@ -488,3 +489,103 @@ async def get_image(path: str = Query(..., description="The filename of the imag
     except Exception as e:
         logger.error(f"Error serving image '{path}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="An internal error occurred while serving the image.")
+
+@router.get("/pdf", summary="Serve a PDF from the uploads directory")
+async def get_pdf(path: str = Query(..., description="The sha256 subfolder and filename of the PDF to retrieve")):
+    """
+    Serves a PDF file from the uploads directory. This endpoint is protected
+    against directory traversal attacks.
+    
+    The path should be in the format: "<sha256_subfolder>/<filename>"
+    Example: "83beb169/document.pdf"
+    """
+    try:
+        uploads_dir, _ = _dirs()
+        
+        # Validate path format
+        path_parts = path.split('/')
+        if len(path_parts) != 2:
+            raise HTTPException(
+                status_code=400, 
+                detail="Invalid path format. Expected format: '<sha256_subfolder>/<filename>'"
+            )
+            
+        subfolder, filename = path_parts
+        
+        # Security: Sanitize path components and prevent directory traversal
+        safe_subfolder = _safe_name(subfolder)
+        safe_filename = _safe_name(filename)
+        
+        if not safe_subfolder or not safe_filename or \
+           ".." in safe_subfolder or ".." in safe_filename or \
+           safe_subfolder.startswith("/") or safe_filename.startswith("/"):
+            raise HTTPException(status_code=400, detail="Invalid path components.")
+            
+        # Validate subfolder is exactly 8 hex characters (sha256 prefix)
+        if not subfolder.strip() or len(subfolder.strip()) != 8 or not all(c in '0123456789abcdefABCDEF' for c in subfolder.strip()):
+            raise HTTPException(
+                status_code=400, 
+                detail="Invalid sha256 subfolder. Must be exactly 8 hexadecimal characters."
+            )
+            
+        # Construct and validate the full path
+        pdf_path = uploads_dir / safe_subfolder / safe_filename
+        
+        if not pdf_path.exists():
+            logger.warning(f"PDF not found: {pdf_path}")
+            raise HTTPException(status_code=404, detail="PDF not found")
+            
+        if not pdf_path.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+            
+        # Verify file is actually a PDF
+        mime_type, _ = mimetypes.guess_type(pdf_path)
+        if mime_type != "application/pdf":
+            raise HTTPException(status_code=400, detail="File is not a PDF")
+            
+        logger.info(f"Serving PDF: {pdf_path}")
+        return FileResponse(str(pdf_path), media_type="application/pdf")
+        
+    except HTTPException as http_exc:
+        # Re-raise HTTP exceptions to let FastAPI handle them
+        raise http_exc
+    except Exception as e:
+        logger.error(f"Error serving PDF '{path}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An internal error occurred while serving the PDF")
+    """
+    try:
+        uploads_dir, _ = _dirs()
+        
+        # Security: Sanitize path components and prevent directory traversal
+        path_parts = path.split('/')
+        if len(path_parts) != 2:
+            raise HTTPException(status_code=400, detail="Invalid path format. Expected format: '<sha256_subfolder>/<filename>'")
+            
+        subfolder, filename = path_parts
+        safe_subfolder = _safe_name(subfolder)
+        safe_filename = _safe_name(filename)
+        
+        if ".." in safe_subfolder or ".." in safe_filename or \
+           safe_subfolder.startswith("/") or safe_filename.startswith("/"):
+            raise HTTPException(status_code=400, detail="Invalid path.")
+            
+        pdf_path = uploads_dir / safe_subfolder / safe_filename
+        
+        if not pdf_path.is_file():
+            logger.warning(f"PDF not found at path: {pdf_path}")
+            raise HTTPException(status_code=404, detail="PDF not found.")
+        
+        # Verify file is actually a PDF
+        mime_type, _ = mimetypes.guess_type(pdf_path)
+        if mime_type != "application/pdf":
+            raise HTTPException(status_code=400, detail="File is not a PDF.")
+            
+        return FileResponse(str(pdf_path), media_type="application/pdf")
+        
+    except HTTPException as http_exc:
+        # Re-raise HTTP exceptions to let FastAPI handle them
+        raise http_exc
+    except Exception as e:
+        logger.error(f"Error serving PDF '{path}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An internal error occurred while serving the PDF.")
+        """

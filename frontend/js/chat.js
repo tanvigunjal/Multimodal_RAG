@@ -15,15 +15,32 @@ export function initChat() {
   const clearHistoryBtn = document.getElementById('clear-history-btn');
   const richResponseToggle = document.getElementById('rich-response-toggle');
 
+  // Load chat history from localStorage and ensure proper structure
+  const savedHistory = localStorage.getItem('chatHistory');
+  try {
+    chatHistory = savedHistory ? JSON.parse(savedHistory) : {};
+    // Validate chat history structure
+    Object.keys(chatHistory).forEach(id => {
+      if (!chatHistory[id].messages || !Array.isArray(chatHistory[id].messages)) {
+        chatHistory[id].messages = [];
+      }
+    });
+  } catch (e) {
+    console.error('Error loading chat history:', e);
+    chatHistory = {};
+  }
+  
   const urlParams = new URLSearchParams(window.location.search);
   const sharedChatId = urlParams.get('chat');
 
+  // Always create a new chat session on page load, unless it's a shared chat
   if (sharedChatId && chatHistory[sharedChatId]) {
     activeChatId = sharedChatId;
-  } else if (!activeChatId || !chatHistory[activeChatId]) {
+  } else {
+    // Create new chat session on page load
     activeChatId = createNewChat();
   }
-  
+
   renderHistoryList();
   loadChat(activeChatId);
 
@@ -38,11 +55,16 @@ export function initChat() {
     }
 
     const userMessage = { sender: 'user', text: query };
-    appendMessage(userMessage);
+    
+    // First add the message to history to ensure it's saved
     addMessageToHistory(userMessage);
+    // Then append it to the UI
+    appendMessage(userMessage);
+    
     chatInput.value = '';
     sendBtn.disabled = true;
 
+    // Now handle the bot's response
     handleStreamQuery(query, richResponseToggle.checked);
   });
 
@@ -71,11 +93,16 @@ export function initChat() {
 }
 
 function handleStreamQuery(query, isRich) {
-  const botMsgContainer = appendMessage({ sender: 'bot' });
+  // Create and save bot message placeholder immediately
+  const botMessage = { sender: 'bot', text: '', sources: [] };
+  const botMsgContainer = appendMessage(botMessage);
   const sendBtn = document.getElementById('send-btn');
   
   let fullResponseText = '';
   let sourcesReceived = [];
+
+  // Add empty bot message to history
+  addMessageToHistory(botMessage);
 
   renderBotMessage(botMsgContainer, { streaming: true }); // Initial render
 
@@ -111,11 +138,15 @@ function handleStreamQuery(query, isRich) {
 
 function createNewChat() {
   const id = `chat_${Date.now()}`;
+  
+  // Always start with welcome message only for new chats
   chatHistory[id] = {
     title: 'New Chat',
     messages: [{ sender: 'bot', text: 'Hello! I am ready to answer questions about your documents.' }]
   };
+  
   activeChatId = id;
+  localStorage.setItem('activeChatId', id);
   updateAndRenderHistory();
   loadChat(id);
   return id;
@@ -127,12 +158,29 @@ function loadChat(id) {
     activeChatId = createNewChat();
     return;
   }
+  
+  // Get fresh copy from localStorage to ensure we have latest data
+  const savedHistory = JSON.parse(localStorage.getItem('chatHistory')) || {};
+  const chat = savedHistory[id] || chatHistory[id];
+  
+  if (!chat.messages || !Array.isArray(chat.messages)) {
+    chat.messages = [];
+  }
+  
   activeChatId = id;
   localStorage.setItem('activeChatId', id);
-  const chat = chatHistory[id];
+  chatHistory[id] = chat; // Update in-memory chat with latest data
+  
   const chatWindow = document.getElementById('chat-window');
   chatWindow.innerHTML = '';
-  chat.messages.forEach(msg => appendMessage(msg));
+  
+  // Render all messages in order
+  chat.messages.forEach(msg => {
+    if (msg && msg.text && (msg.sender === 'user' || msg.sender === 'bot')) {
+      appendMessage(msg);
+    }
+  });
+  
   renderHistoryList();
   document.querySelector('.crumb').textContent = chat.title;
   scrollToBottom();
@@ -301,8 +349,21 @@ function copyToClipboard(text, btn, originalContent) {
 }
 
 function updateAndRenderHistory() {
-  localStorage.setItem('chatHistory', JSON.stringify(chatHistory));
+  // First ensure we have the latest history from localStorage
+  const savedHistory = JSON.parse(localStorage.getItem('chatHistory')) || {};
+  
+  // Update only the active chat in the saved history
+  if (activeChatId && chatHistory[activeChatId]) {
+    savedHistory[activeChatId] = chatHistory[activeChatId];
+  }
+  
+  // Save back to localStorage
+  localStorage.setItem('chatHistory', JSON.stringify(savedHistory));
   localStorage.setItem('activeChatId', activeChatId);
+  
+  // Update our in-memory history
+  chatHistory = savedHistory;
+  
   renderHistoryList();
 }
 
@@ -310,11 +371,28 @@ function addMessageToHistory(message, overwriteLast = false) {
   const chat = chatHistory[activeChatId];
   if (!chat) return;
 
-  if (overwriteLast && chat.messages.length > 0) {
-    chat.messages[chat.messages.length - 1] = message;
-  } else {
-    chat.messages.push(message);
+  // Get the latest version of this chat from localStorage
+  const savedHistory = JSON.parse(localStorage.getItem('chatHistory')) || {};
+  const savedChat = savedHistory[activeChatId] || chat;
+
+  // Ensure messages array exists
+  if (!savedChat.messages) {
+    savedChat.messages = [];
   }
+
+  // Update messages
+  if (overwriteLast && savedChat.messages.length > 0) {
+    savedChat.messages[savedChat.messages.length - 1] = message;
+  } else {
+    savedChat.messages.push(message);
+  }
+
+  // Update both in-memory and localStorage versions
+  chatHistory[activeChatId] = savedChat;
+  savedHistory[activeChatId] = savedChat;
+  
+  // Immediately save to localStorage to prevent losing messages
+  localStorage.setItem('chatHistory', JSON.stringify(savedHistory));
   
   if (chat.title === 'New Chat' && message.sender === 'user') {
     console.log('Generating title for:', message.text);
@@ -323,20 +401,22 @@ function addMessageToHistory(message, overwriteLast = false) {
         console.log('Received title:', title);
         if (chatHistory[chatId]) {
           chatHistory[chatId].title = title;
+          savedHistory[chatId].title = title;
           document.querySelector('.crumb').textContent = title;
           const chatItem = document.querySelector(`.chat-item[data-chat-id="${chatId}"] .chat-item-title`);
           if (chatItem) {
             chatItem.textContent = title;
           }
-          updateAndRenderHistory();
+          localStorage.setItem('chatHistory', JSON.stringify(savedHistory));
+          renderHistoryList();
         }
       })
       .catch(error => {
         console.error('Failed to get chat title:', error);
-        updateAndRenderHistory();
+        renderHistoryList();
       });
   } else {
-    updateAndRenderHistory();
+    renderHistoryList();
   }
 }
 
@@ -357,7 +437,7 @@ function appendMessage(message) {
       text: message.text || '', 
       sources: message.sources || [] 
     });
-  } else {
+  } else if (message.sender === 'user' && message.text) {
     const p = document.createElement('p');
     p.textContent = message.text;
     contentDiv.appendChild(p);

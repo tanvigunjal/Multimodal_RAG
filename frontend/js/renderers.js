@@ -63,14 +63,22 @@ export function renderBotMessage(contentDiv, { text = '', sources = [], streamin
     .replace(/.*\.pdf.*\n?/g, '') // Remove any line containing .pdf
     .replace(/\[\d+\]/g, '')
     .trim();
-  const answerHtml = DOMPurify.sanitize(marked.parse(cleanedText));
+
+  // Parse the markdown and sanitize
+  const parsedHtml = DOMPurify.sanitize(marked.parse(cleanedText));
+  
+  const messageDiv = document.createElement('div');
+  messageDiv.className = 'message bot';
+  
   const answerDiv = document.createElement('div');
   answerDiv.className = 'answer-text';
-  answerDiv.innerHTML = answerHtml;
+  answerDiv.innerHTML = parsedHtml;
   if (streaming) {
     answerDiv.classList.add('streaming');
   }
-  contentDiv.appendChild(answerDiv);
+  
+  messageDiv.appendChild(answerDiv);
+  contentDiv.appendChild(messageDiv);
 
   // 3. Render the Collapsible Sources Section
   if (uniqueSources.length > 0) {
@@ -90,13 +98,70 @@ export function renderBotMessage(contentDiv, { text = '', sources = [], streamin
     const sourceList = document.createElement('div');
     sourceList.className = 'sources-list';
 
-    uniqueSources.forEach(source => {
+    // Group sources by file name and path
+    const groupedSources = uniqueSources.reduce((acc, source) => {
+      if (!acc[source.file_name]) {
+        acc[source.file_name] = {
+          type: source.type,
+          pages: [],
+          file_path: source.file_path // Store the file path from metadata
+        };
+      }
+      acc[source.file_name].pages.push(source.page_number);
+      return acc;
+    }, {});
+
+    // Create source list items
+    Object.entries(groupedSources).forEach(([fileName, data]) => {
       const item = document.createElement('div');
       item.className = 'source-list-item';
-      item.innerHTML = `
-        <i class="fas fa-${source.type === 'image' ? 'image' : 'file-alt'}"></i>
-        <span class="source-text">${source.file_name}, page ${source.page_number}</span>
-      `;
+      
+      // Sort page numbers numerically
+      const sortedPages = data.pages.sort((a, b) => a - b);
+      const pagesText = sortedPages.join(', ');
+      
+      // Create a clickable link for PDF files
+      const sourceContent = fileName.toLowerCase().endsWith('.pdf') ? 
+        (() => {
+          // Function to extract sha256 subfolder and create PDF path
+          const getPdfPath = (filePath, fileName) => {
+            // Try to extract from docker path format first
+            const dockerMatch = filePath.match(/\/uploads\/([a-f0-9]{8})[^/]*\/([^/]+\.pdf)$/i);
+            if (dockerMatch) {
+              return `${dockerMatch[1]}/${dockerMatch[2]}`;
+            }
+            
+            // Try to extract from relative path format
+            const relativeMatch = filePath.match(/uploads\/([a-f0-9]{8})[^/]*\/([^/]+\.pdf)$/i);
+            if (relativeMatch) {
+              return `${relativeMatch[1]}/${relativeMatch[2]}`;
+            }
+            
+            // Try to use the filename if it starts with a sha256 prefix
+            const sha256Match = fileName.match(/^([a-f0-9]{8})[^/]*/i);
+            if (sha256Match) {
+              return `${sha256Match[1]}/${fileName}`;
+            }
+            
+            // Default fallback with known sha256 prefix
+            console.warn('No sha256 prefix found, using default:', { fileName, filePath });
+            return `83beb169/${fileName}`;
+          };
+          
+          const filePath = data.file_path || '';
+          const pdfPath = getPdfPath(filePath, fileName);
+          console.log('Constructed PDF path:', pdfPath);
+          
+          return `<a href="${API_BASE_URL}/pdf?path=${encodeURIComponent(pdfPath)}" target="_blank" class="source-link">
+           <i class="fas fa-file-pdf"></i>
+           <span class="source-text">${fileName} (page ${pagesText})</span>
+           <i class="fas fa-external-link-alt"></i>
+         </a>`;
+        })() :
+        `<i class="fas fa-${data.type === 'image' ? 'image' : 'file-alt'}"></i>
+         <span class="source-text">${fileName} (page ${pagesText})</span>`;
+      
+      item.innerHTML = sourceContent;
       sourceList.appendChild(item);
     });
 
