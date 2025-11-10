@@ -1,5 +1,12 @@
 import { API_BASE_URL } from './api.js';
 
+// Store event handlers for cleanup
+let eventHandlers = {
+  dropZone: {},
+  fileInput: {},
+  uploadButton: {}
+};
+
 export function initUploads() {
   const dropZone = document.getElementById('drop-zone');
   const fileInput = document.getElementById('file-input');
@@ -7,6 +14,9 @@ export function initUploads() {
   const uploadStatus = document.getElementById('upload-status');
 
   if (!dropZone || !fileInput || !uploadButton || !uploadStatus) return;
+
+  // Clean up existing event listeners
+  cleanup();
 
   let filesToUpload = [];
 
@@ -20,30 +30,35 @@ export function initUploads() {
     }
   };
 
-  dropZone.addEventListener('click', () => fileInput.click());
-
-  fileInput.addEventListener('change', () => {
+  // Store handlers for cleanup
+  eventHandlers.dropZone.click = () => fileInput.click();
+  eventHandlers.fileInput.change = () => {
     filesToUpload = Array.from(fileInput.files);
     updateFileList();
-  });
-
-  dropZone.addEventListener('dragover', (e) => {
+  };
+  eventHandlers.dropZone.dragover = (e) => {
     e.preventDefault();
     dropZone.classList.add('drag-over');
-  });
-
-  dropZone.addEventListener('dragleave', () => {
+  };
+  eventHandlers.dropZone.dragleave = () => {
     dropZone.classList.remove('drag-over');
-  });
-
-  dropZone.addEventListener('drop', (e) => {
+  };
+  eventHandlers.dropZone.drop = (e) => {
     e.preventDefault();
     dropZone.classList.remove('drag-over');
     filesToUpload = Array.from(e.dataTransfer.files);
     updateFileList();
-  });
+  };
 
-  uploadButton.addEventListener('click', async () => {
+  // Add event listeners
+  dropZone.addEventListener('click', eventHandlers.dropZone.click);
+  fileInput.addEventListener('change', eventHandlers.fileInput.change);
+  dropZone.addEventListener('dragover', eventHandlers.dropZone.dragover);
+  dropZone.addEventListener('dragleave', eventHandlers.dropZone.dragleave);
+  dropZone.addEventListener('drop', eventHandlers.dropZone.drop);
+
+  // Store upload button handler
+  eventHandlers.uploadButton.click = async () => {
     if (filesToUpload.length === 0) {
       uploadStatus.textContent = 'Please select files to upload.';
       return;
@@ -84,19 +99,16 @@ export function initUploads() {
         filesToUpload.forEach(file => formData.append('files', file));
       }
 
-      // Initial status
-      statusText.textContent = `Preparing to upload ${filesToUpload.length} file(s)...`;
-      progressInner.style.width = '5%';
-
       const updateProgress = (message, progress, color = null) => {
         statusText.textContent = message;
-        progressInner.style.width = progress;
+        progressInner.style.width = `${progress}%`;
         if (color) {
           progressInner.style.backgroundColor = color;
         }
       };
 
-      updateProgress('Uploading files to server...', '25%');
+      updateProgress('Preparing to upload files...', 5);
+      updateProgress('Uploading files to server...', 25);
 
       const response = await fetch(`${API_BASE_URL}${endpoint}`, {
         method: 'POST',
@@ -145,9 +157,11 @@ export function initUploads() {
               if (duplicateCount > 0) message += `ℹ ${duplicateCount} file(s) already exist in database\n`;
               if (failedCount > 0) message += `✗ ${failedCount} file(s) failed to process\n`;
               
-              statusText.innerHTML = message.replace(/\n/g, '<br>');
-              progressInner.style.width = '100%';
-              progressInner.style.backgroundColor = failedCount > 0 ? '#dc3545' : '#4CAF50';
+              updateProgress(
+                message.trim(),
+                100,
+                failedCount > 0 ? '#dc3545' : '#4CAF50'
+              );
               return;
             }
             
@@ -156,11 +170,9 @@ export function initUploads() {
                 .filter(s => s.current_step)
                 .map(s => `${s.file_name}: ${s.current_step}`)
                 .join('\n');
-              statusText.innerHTML = currentSteps.replace(/\n/g, '<br>');
-              progressInner.style.width = `${totalProgress}%`;
+              updateProgress(currentSteps, 50 + (totalProgress / 2));
             } else {
-              statusText.textContent = 'Waiting for processing to begin...';
-              progressInner.style.width = '10%';
+              updateProgress('Waiting for processing to begin...', 50);
             }
           } catch (error) {
             console.error('Error polling job status:', error);
@@ -180,9 +192,6 @@ export function initUploads() {
       console.log('Upload successful, starting status polling:', result);
       await pollJobStatus(result.jobs);
 
-      // Start polling for all jobs
-      pollJobStatus(result.jobs);
-
       filesToUpload = [];
       fileInput.value = '';
       updateFileList();
@@ -191,11 +200,7 @@ export function initUploads() {
       setTimeout(() => {
         if (uploadStatus.contains(container)) {
           container.style.opacity = '0';
-          setTimeout(() => {
-            if (uploadStatus.contains(container)) {
-              uploadStatus.removeChild(container);
-            }
-          }, 300);
+          setTimeout(() => container.remove(), 300);
         }
       }, 30000);
 
@@ -217,6 +222,41 @@ export function initUploads() {
       }, 10000);
     } finally {
       uploadButton.disabled = false;
+      uploadButton.style.display = 'block';
     }
-  });
+  };
+
+  // Add upload button listener
+  uploadButton.addEventListener('click', eventHandlers.uploadButton.click);
+}
+
+export function cleanup() {
+  const dropZone = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('file-input');
+  const uploadButton = document.getElementById('upload-button');
+  
+  if (dropZone) {
+    Object.entries(eventHandlers.dropZone).forEach(([event, handler]) => {
+      dropZone.removeEventListener(event, handler);
+    });
+  }
+  
+  if (fileInput) {
+    Object.entries(eventHandlers.fileInput).forEach(([event, handler]) => {
+      fileInput.removeEventListener(event, handler);
+    });
+  }
+  
+  if (uploadButton) {
+    Object.entries(eventHandlers.uploadButton).forEach(([event, handler]) => {
+      uploadButton.removeEventListener(event, handler);
+    });
+  }
+  
+  // Reset event handlers
+  eventHandlers = {
+    dropZone: {},
+    fileInput: {},
+    uploadButton: {}
+  };
 }

@@ -22,44 +22,155 @@ export const ChatService = {
     // For rich streaming, we use EventSource which is ideal for SSE but only supports GET.
     // For simple text, we use POST with fetch to support potentially long queries.
     if (rich) {
-      // NOTE: Using EventSource requires the backend to correctly set the content-type 
-      // as 'text/event-stream' and to send data in the proper SSE format.
-      const eventSource = new EventSource(`${url}?query=${encodeURIComponent(query)}`);
+      // Get auth token from localStorage
+      const authToken = localStorage.getItem('auth_token');
+      if (!authToken) {
+        if (onError) onError(new Error('Not authenticated. Please log in.'));
+        return { close: () => {} };
+      }
+      
       let fullResponse = '';
+      let eventSource = null;
 
-      // Custom event listener for 'sources' event from the backend
-      eventSource.addEventListener('sources', (event) => {
+      try {
+        // Create EventSource with auth token in URL
+        eventSource = new EventSource(
+          `${url}?query=${encodeURIComponent(query)}&token=${encodeURIComponent(authToken)}`
+        );
+
+      // Handler for 'sources' event
+      const handleSources = (event) => {
         try {
-          // The backend should send a JSON string of the sources array
+          if (!event.data) {
+            console.warn('Empty sources event data');
+            return;
+          }
+
           const sources = JSON.parse(event.data);
-          if (onSources) onSources(sources);
+          console.log('Received sources event:', sources);
+          
+          if (!Array.isArray(sources)) {
+            console.error('Sources is not an array:', sources);
+            return;
+          }
+          
+          const validSources = sources.filter(s => {
+            if (!s || typeof s !== 'object') return false;
+            return s.file_name || s.file_path;
+          });
+          
+          console.log('Processed valid sources:', validSources);
+          
+          if (onSources && validSources.length > 0) {
+            onSources(validSources);
+          }
         } catch (e) {
-          console.error('Failed to parse sources event:', e);
+          console.error('Failed to process sources event:', e, event.data);
+          handleError(new Event('error', { error: e }));
         }
-      });
-
-      // Event listener for streaming text tokens
-      eventSource.addEventListener('token', (event) => {
-        // The token is sent as a JSON string
-        const token = JSON.parse(event.data); 
-        fullResponse += token;
-        if (onToken) onToken(token);
-      });
-
-      // Event listener for stream completion
-      eventSource.addEventListener('end', () => {
-        eventSource.close();
-        if (onEnd) onEnd(fullResponse);
-      });
-
-      // Generic error handling for EventSource
-      eventSource.onerror = (err) => {
-        console.error('EventSource failed:', err);
-        eventSource.close();
-        if (onError) onError(new Error('Connection to the server was lost.'));
       };
 
-      return { close: () => eventSource.close() };
+      // Handler for 'token' event
+      const handleToken = (event) => {
+        try {
+          if (!event.data) return;
+          const token = JSON.parse(event.data);
+          if (typeof token === 'string') {
+            fullResponse += token;
+            if (onToken) onToken(token);
+          }
+        } catch (e) {
+          console.error('Failed to process token event:', e, event.data);
+          // Don't fail the whole stream for a single token error
+        }
+      };
+
+      // Cleanup function
+      const cleanup = () => {
+        if (!eventSource) return;
+        try {
+          eventSource.removeEventListener('sources', handleSources);
+          eventSource.removeEventListener('token', handleToken);
+          eventSource.removeEventListener('end', handleEnd);
+          eventSource.removeEventListener('error', handleError);
+          eventSource.close();
+          eventSource = null;
+        } catch (e) {
+          console.warn('Error during EventSource cleanup:', e);
+        }
+      };
+
+      // Handler for 'end' event
+      const handleEnd = () => {
+        if (onEnd) onEnd(fullResponse);
+        cleanup();
+      };
+
+      // Error handler for EventSource
+      const handleError = (event) => {
+        if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
+          console.log('EventSource connection closed normally');
+          return;
+        }
+
+        // Get detailed error information
+        let errorMessage = 'Connection to the server was lost';
+        try {
+          if (event && event.data) {
+            const errorData = JSON.parse(event.data);
+            errorMessage = errorData.detail || errorMessage;
+          }
+        } catch (e) {
+          console.warn('Failed to parse error data:', e);
+        }
+
+        console.error('Stream error:', errorMessage);
+        cleanup();
+        if (onError) onError(new Error(errorMessage));
+      };
+
+      // Set up event listeners
+      eventSource.addEventListener('sources', handleSources);
+      eventSource.addEventListener('token', handleToken);
+      eventSource.addEventListener('end', handleEnd);
+      eventSource.onerror = handleError;
+      
+      // Return cleanup function
+      return { close: cleanup };
+
+      } catch (e) {
+        console.error('Error setting up EventSource:', e);
+        if (eventSource) {
+          try {
+            eventSource.close();
+          } catch (closeError) {
+            console.warn('Error closing EventSource:', closeError);
+          }
+        }
+        if (onError) onError(e);
+        return { close: () => {} };
+      }
+
+      // Set up event listeners and error handling
+      eventSource.addEventListener('sources', handleSources);
+      eventSource.addEventListener('token', handleToken);
+      eventSource.addEventListener('end', handleEnd);
+      eventSource.onerror = handleError;
+      
+      // Return cleanup function
+      return {
+        close: () => {
+          try {
+            eventSource.removeEventListener('sources', handleSources);
+            eventSource.removeEventListener('token', handleToken);
+            eventSource.removeEventListener('end', handleEnd);
+            eventSource.removeEventListener('error', handleError);
+            eventSource.close();
+          } catch (e) {
+            console.warn('Error during manual EventSource cleanup:', e);
+          }
+        }
+      };
 
     } else {
       // Standard fetch/POST for simple text stream
@@ -70,14 +181,17 @@ export const ChatService = {
         try {
           const response = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+            },
             body: JSON.stringify({ query }),
             signal,
           });
 
           if (!response.ok || !response.body) {
-            const errData = await response.json();
-            throw new Error(errData.detail || `HTTP error! Status: ${response.status}`);
+            const error = await response.json().catch(() => ({ detail: `HTTP error! Status: ${response.status}` }));
+            throw new Error(error.detail || `Request failed: ${response.status}`);
           }
 
           const reader = response.body.getReader();
@@ -93,14 +207,30 @@ export const ChatService = {
           }
           if (onEnd) onEnd(fullResponse);
         } catch (error) {
+          // Only report errors that aren't from manual stream closing
           if (error.name !== 'AbortError') {
-            console.error('Fetch stream failed:', error);
-            if (onError) onError(error);
+            const errorMessage = error.message || 'Failed to stream response';
+            console.error('Stream error:', errorMessage);
+            if (onError) onError(new Error(errorMessage));
+          }
+        } finally {
+          // Ensure reader is released if it exists
+          if (reader) {
+            try {
+              await reader.cancel();
+            } catch (e) {
+              console.warn('Failed to cancel reader:', e);
+            }
           }
         }
       })();
 
-      return { close: () => controller.abort() };
+      return { 
+        close: () => {
+          controller.abort();
+          console.log('Stream closed by user');
+        }
+      };
     }
   }
 };

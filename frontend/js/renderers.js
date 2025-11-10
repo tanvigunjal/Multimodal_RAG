@@ -1,5 +1,5 @@
 // js/renderers.js
-import { API_BASE_URL } from './api.js';
+import { API_BASE_URL, getAuthToken } from './api.js';
 
 /**
  * A consolidated function to render the entire bot message, including visuals,
@@ -14,8 +14,40 @@ export function renderBotMessage(contentDiv, { text = '', sources = [], streamin
   // Clear previous content
   contentDiv.innerHTML = '';
 
-  // Only handle sources once
-  const uniqueSources = [...new Map(sources.map(s => [`${s.file_name}:${s.page_number}`, s])).values()];
+  // Validate and normalize sources array
+  const normalizedSources = Array.isArray(sources) ? sources : [];
+  
+  // Filter out invalid sources and normalize required fields
+  const validSources = normalizedSources.filter(s => {
+    if (!s || typeof s !== 'object') return false;
+    
+    // Ensure required fields have default values
+    s.file_name = s.file_name || 'Unknown Document';
+    s.type = s.type || 'text';
+    s.page_number = s.page_number || 1;
+    
+    // PDF sources must have a file path
+    if (s.file_name.toLowerCase().endsWith('.pdf') && !s.file_path) {
+      console.warn('PDF source missing file path:', s.file_name);
+      return false;
+    }
+    
+    return true;
+  });
+  
+  // Create unique sources based on content identifier
+  const uniqueSources = [...new Map(validSources.map(s => {
+    const contentId = s.file_path ? 
+      `${s.file_path}:${s.page_number}` : 
+      `${s.file_name}:${s.page_number}`;
+    return [contentId, s];
+  })).values()];
+  
+  console.log('Sources processing:', {
+    input: sources?.length || 0,
+    valid: validSources.length,
+    unique: uniqueSources.length
+  });
   
   // 1. Render Visuals First (if available)
   const images = uniqueSources.filter(s => s.type === 'image' && s.image_path);
@@ -100,66 +132,84 @@ export function renderBotMessage(contentDiv, { text = '', sources = [], streamin
 
     // Group sources by file name and path
     const groupedSources = uniqueSources.reduce((acc, source) => {
-      if (!acc[source.file_name]) {
-        acc[source.file_name] = {
-          type: source.type,
+      // Skip invalid sources
+      if (!source || (!source.file_name && !source.file_path)) {
+        console.warn('Invalid source found:', source);
+        return acc;
+      }
+
+      // Use file path as identifier if available, otherwise fallback to file name
+      const fileId = source.file_path || source.file_name || 'unknown';
+      const fileName = source.file_name || 'Unknown Document';
+
+      if (!acc[fileId]) {
+        acc[fileId] = {
+          type: source.type || 'text',
           pages: [],
-          file_path: source.file_path // Store the file path from metadata
+          file_name: fileName,
+          file_path: source.file_path
         };
       }
-      acc[source.file_name].pages.push(source.page_number);
+      
+      // Only add valid page numbers
+      if (source.page_number != null && source.page_number !== undefined) {
+        acc[fileId].pages.push(source.page_number);
+      }
+      
       return acc;
     }, {});
 
     // Create source list items
-    Object.entries(groupedSources).forEach(([fileName, data]) => {
+    Object.entries(groupedSources).forEach(([fileId, data]) => {
       const item = document.createElement('div');
       item.className = 'source-list-item';
       
-      // Sort page numbers numerically
-      const sortedPages = data.pages.sort((a, b) => a - b);
-      const pagesText = sortedPages.join(', ');
-      
-      // Create a clickable link for PDF files
-      const sourceContent = fileName.toLowerCase().endsWith('.pdf') ? 
+      // Ensure we have valid display values
+      const displayName = data.file_name || 'Unknown Document';
+      const pageNumbers = data.pages.filter(p => p != null && p !== undefined);
+      const pagesText = pageNumbers.length > 0 ? pageNumbers.sort((a, b) => a - b).join(', ') : '1';      // Create a clickable link for PDF files
+      const sourceContent = (data.file_name || '').toLowerCase().endsWith('.pdf') ? 
         (() => {
-          // Function to extract sha256 subfolder and create PDF path
-          const getPdfPath = (filePath, fileName) => {
-            // Try to extract from docker path format first
-            const dockerMatch = filePath.match(/\/uploads\/([a-f0-9]{8})[^/]*\/([^/]+\.pdf)$/i);
-            if (dockerMatch) {
-              return `${dockerMatch[1]}/${dockerMatch[2]}`;
-            }
-            
-            // Try to extract from relative path format
-            const relativeMatch = filePath.match(/uploads\/([a-f0-9]{8})[^/]*\/([^/]+\.pdf)$/i);
-            if (relativeMatch) {
-              return `${relativeMatch[1]}/${relativeMatch[2]}`;
-            }
-            
-            // Try to use the filename if it starts with a sha256 prefix
-            const sha256Match = fileName.match(/^([a-f0-9]{8})[^/]*/i);
-            if (sha256Match) {
-              return `${sha256Match[1]}/${fileName}`;
-            }
-            
-            // Default fallback with known sha256 prefix
-            console.warn('No sha256 prefix found, using default:', { fileName, filePath });
-            return `83beb169/${fileName}`;
-          };
+          const fullPath = data.file_path; // Full path from backend
+          const displayName = data.file_name || 'Unknown Document';
+          const token = getAuthToken(); // Use the API helper function
           
-          const filePath = data.file_path || '';
-          const pdfPath = getPdfPath(filePath, fileName);
-          console.log('Constructed PDF path:', pdfPath);
+          // Extract the required path format: '<sha256_subfolder>/<filename>'
+          let pdfPath = null;
+          if (fullPath) {
+            const match = fullPath.match(/\/uploads\/([^/]+\/[^/]+)$/);
+            pdfPath = match ? match[1] : null;
+          }
           
-          return `<a href="${API_BASE_URL}/pdf?path=${encodeURIComponent(pdfPath)}" target="_blank" class="source-link">
-           <i class="fas fa-file-pdf"></i>
-           <span class="source-text">${fileName} (page ${pagesText})</span>
-           <i class="fas fa-external-link-alt"></i>
-         </a>`;
+          if (!pdfPath || !token) {
+            const reason = !pdfPath ? 'Invalid file path format' : 'Not authenticated';
+            console.warn(`Cannot create PDF link: ${reason}`, { fullPath });
+            return `<div class="source-link disabled">
+              <i class="fas fa-file-pdf"></i>
+              <span class="source-text"><strong>${displayName}</strong> (Page ${pagesText})</span>
+              ${!token ? '<i class="fas fa-exclamation-circle" title="Please log in to view PDFs"></i>' : ''}
+            </div>`;
+          }
+          
+          try {
+            const pdfUrl = `${API_BASE_URL}/pdf?path=${encodeURIComponent(pdfPath)}&token=${encodeURIComponent(token)}`;
+            console.log('Generated PDF URL:', { pdfPath, pdfUrl });
+            return `<a href="${pdfUrl}" target="_blank" class="source-link">
+              <i class="fas fa-file-pdf"></i>
+              <span class="source-text"><strong>${displayName}</strong> (Page ${pagesText})</span>
+              <i class="fas fa-external-link-alt"></i>
+            </a>`;
+          } catch (error) {
+            console.error('Error generating PDF link:', error);
+            return `<div class="source-link disabled">
+              <i class="fas fa-file-pdf"></i>
+              <span class="source-text"><strong>${displayName}</strong> (Page ${pagesText})</span>
+              <i class="fas fa-exclamation-circle" title="Error generating PDF link"></i>
+            </div>`;
+          }`;`;
         })() :
         `<i class="fas fa-${data.type === 'image' ? 'image' : 'file-alt'}"></i>
-         <span class="source-text">${fileName} (page ${pagesText})</span>`;
+         <span class="source-text"><strong>${data.file_name || 'Unknown Document'}</strong> (Page ${pagesText})</span>`;
       
       item.innerHTML = sourceContent;
       sourceList.appendChild(item);
@@ -188,10 +238,10 @@ export function openImagePopup(url) {
   if (existing) existing.remove();
 
   const overlay = document.createElement('div');
-  overlay.className = 'image-popup-overlay';
+  overlay.className = 'image-popup-overlay fade-in';
   
   const popup = document.createElement('div');
-  popup.className = 'image-popup';
+  popup.className = 'image-popup scale-in';
   const img = document.createElement('img');
   img.src = url;
   popup.appendChild(img);

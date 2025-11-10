@@ -7,6 +7,8 @@ let chatHistory = JSON.parse(localStorage.getItem('chatHistory')) || {};
 let activeChatId = localStorage.getItem('activeChatId') || null;
 let activeStream = null;
 
+let documentClickHandler;
+
 export function initChat() {
   const chatForm = document.getElementById('chat-form');
   const chatInput = document.getElementById('chat-input');
@@ -14,6 +16,9 @@ export function initChat() {
   const newChatBtn = document.getElementById('new-chat-btn');
   const clearHistoryBtn = document.getElementById('clear-history-btn');
   const richResponseToggle = document.getElementById('rich-response-toggle');
+
+  // Clean up existing event listeners if reinitializing
+  cleanup();
 
   // Load chat history from localStorage and ensure proper structure
   const savedHistory = localStorage.getItem('chatHistory');
@@ -93,13 +98,14 @@ export function initChat() {
   });
 
   // Global listener to close the menu when clicking outside
-  document.addEventListener('click', (e) => {
+  documentClickHandler = (e) => {
     const menu = document.querySelector('.menu-panel');
     const menuButton = e.target.closest('.chat-item-menu-btn');
     if (menu && !menu.contains(e.target) && !menuButton) {
       menu.remove();
     }
-  });
+  };
+  document.addEventListener('click', documentClickHandler);
 }
 
 function handleStreamQuery(query, isRich) {
@@ -120,8 +126,12 @@ function handleStreamQuery(query, isRich) {
     query,
     rich: isRich,
     onSources: (sources) => {
-      sourcesReceived = sources;
-      renderBotMessage(botMsgContainer, { text: fullResponseText, sources, streaming: true });
+      console.log('Received sources:', sources);
+      sourcesReceived = Array.isArray(sources) ? sources : [];
+      // Ensure we have valid sources before rendering
+      if (sourcesReceived.length > 0) {
+        renderBotMessage(botMsgContainer, { text: fullResponseText, sources: sourcesReceived, streaming: true });
+      }
     },
     onToken: (token) => {
       fullResponseText += token;
@@ -318,19 +328,20 @@ function showShareModal(chatId) {
 }
 
 function copyToClipboard(text, btn, originalContent) {
+  const updateButton = (success) => {
+    btn.innerHTML = success ? 
+      '<i class="fas fa-check"></i> Copied!' : 
+      '<i class="fas fa-times"></i> Failed';
+    setTimeout(() => btn.innerHTML = originalContent, 2000);
+  };
+
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text).then(() => {
-      btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
-      setTimeout(() => {
-        btn.innerHTML = originalContent;
-      }, 2000);
-    }).catch(err => {
-      console.error('Failed to copy text: ', err);
-      btn.innerHTML = '<i class="fas fa-times"></i> Failed';
-      setTimeout(() => {
-        btn.innerHTML = originalContent;
-      }, 2000);
-    });
+    navigator.clipboard.writeText(text)
+      .then(() => updateButton(true))
+      .catch(err => {
+        console.error('Failed to copy text: ', err);
+        updateButton(false);
+      });
   } else {
     // Fallback for older browsers
     const textArea = document.createElement('textarea');
@@ -338,23 +349,18 @@ function copyToClipboard(text, btn, originalContent) {
     textArea.style.position = 'absolute';
     textArea.style.left = '-9999px';
     document.body.appendChild(textArea);
-    textArea.focus();
-    textArea.select();
+    
     try {
+      textArea.focus();
+      textArea.select();
       const successful = document.execCommand('copy');
-      if (successful) {
-        btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
-      } else {
-        btn.innerHTML = '<i class="fas fa-times"></i> Failed';
-      }
+      updateButton(successful);
     } catch (err) {
       console.error('Fallback copy failed: ', err);
-      btn.innerHTML = '<i class="fas fa-times"></i> Failed';
+      updateButton(false);
+    } finally {
+      document.body.removeChild(textArea);
     }
-    document.body.removeChild(textArea);
-    setTimeout(() => {
-      btn.innerHTML = originalContent;
-    }, 2000);
   }
 }
 
@@ -464,4 +470,22 @@ function appendMessage(message) {
 function scrollToBottom() {
   const chatWindow = document.getElementById('chat-window');
   chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
+export function cleanup() {
+  // Clean up active stream if any
+  if (activeStream) {
+    activeStream.close();
+    activeStream = null;
+  }
+  
+  // Remove global event listeners
+  if (documentClickHandler) {
+    document.removeEventListener('click', documentClickHandler);
+    documentClickHandler = null;
+  }
+  
+  // Clean up any open menus
+  const menu = document.querySelector('.menu-panel');
+  if (menu) menu.remove();
 }
