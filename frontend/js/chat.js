@@ -49,9 +49,14 @@ export function initChat() {
     // Check if the current active chat has any user messages
     const currentChat = chatHistory[activeChatId];
     const hasUserMessages = currentChat.messages && currentChat.messages.some(msg => msg.sender === 'user');
+    const hasOnlyWelcomeMessage = currentChat.messages && 
+      currentChat.messages.length === 1 && 
+      currentChat.messages[0].sender === 'bot' && 
+      currentChat.messages[0].text === 'Hello! I am ready to answer questions about your documents.';
     
-    // Create a new chat only if the current chat already has user messages
-    if (hasUserMessages) {
+    // Create a new chat only if the current chat has user messages
+    // and is not just a fresh chat with only the welcome message
+    if (hasUserMessages && !hasOnlyWelcomeMessage) {
       activeChatId = createNewChat();
     }
   }
@@ -85,7 +90,20 @@ export function initChat() {
 
   newChatBtn.addEventListener('click', () => {
     if (activeStream) activeStream.close();
-    activeChatId = createNewChat();
+    
+    // Check if the current chat has any user messages
+    const currentChat = chatHistory[activeChatId];
+    const hasUserMessages = currentChat.messages && currentChat.messages.some(msg => msg.sender === 'user');
+    const hasOnlyWelcomeMessage = currentChat.messages && 
+      currentChat.messages.length === 1 && 
+      currentChat.messages[0].sender === 'bot' && 
+      currentChat.messages[0].text === 'Hello! I am ready to answer questions about your documents.';
+    
+    // Create a new chat only if there are user messages in the current chat
+    // and it's not just a fresh chat with only the welcome message
+    if (hasUserMessages && !hasOnlyWelcomeMessage) {
+      activeChatId = createNewChat();
+    }
   });
 
   clearHistoryBtn.addEventListener('click', () => {
