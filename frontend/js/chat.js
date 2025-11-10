@@ -33,12 +33,22 @@ export function initChat() {
   const urlParams = new URLSearchParams(window.location.search);
   const sharedChatId = urlParams.get('chat');
 
-  // Always create a new chat session on page load, unless it's a shared chat
+  // Handle chat initialization based on various conditions
   if (sharedChatId && chatHistory[sharedChatId]) {
+    // If it's a shared chat, always use that
     activeChatId = sharedChatId;
-  } else {
-    // Create new chat session on page load
+  } else if (!activeChatId || !chatHistory[activeChatId]) {
+    // If there's no active chat or the active chat doesn't exist, create a new one
     activeChatId = createNewChat();
+  } else {
+    // Check if the current active chat has any user messages
+    const currentChat = chatHistory[activeChatId];
+    const hasUserMessages = currentChat.messages && currentChat.messages.some(msg => msg.sender === 'user');
+    
+    // Create a new chat only if the current chat already has user messages
+    if (hasUserMessages) {
+      activeChatId = createNewChat();
+    }
   }
 
   renderHistoryList();
