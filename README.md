@@ -2,7 +2,7 @@
 
 This project is a sophisticated, production-ready Retrieval-Augmented Generation (RAG) application designed to answer queries based on a diverse range of documents. It leverages a powerful multimodal ingestion pipeline, a robust vector database, and state-of-the-art language models to provide accurate, context-aware responses.
 
-## ✨ Features
+## Features
 
 - **Multimodal Data Ingestion:** Supports a wide variety of file formats, including PDF, images, and more, by leveraging the `unstructured` library.
 - **Advanced RAG Pipeline:** Utilizes LangChain for orchestrating a complex RAG pipeline, including document chunking, embedding, and retrieval.
@@ -12,7 +12,7 @@ This project is a sophisticated, production-ready Retrieval-Augmented Generation
 - **Containerized Deployment:** Fully containerized with Docker and Docker Compose for easy setup, portability, and scalability.
 - **Production-Ready:** Includes health checks, environment-based configuration, and a scalable architecture.
 
-## 🏗️ Architecture Overview
+## Architecture Overview
 
 The application is composed of three main services orchestrated by Docker Compose:
 
@@ -61,7 +61,7 @@ The application is composed of three main services orchestrated by Docker Compos
 - Secure file handling
 - Access control
 
-## 🚀 Getting Started
+## Getting Started
 
 Follow these instructions to get the project up and running on your local machine.
 
@@ -103,7 +103,7 @@ Follow these instructions to get the project up and running on your local machin
 3.  **Ask questions:**
     Once the documents are ingested, you can start asking questions through the chat interface. The RAG agent will retrieve relevant information from the documents and generate a comprehensive answer.
 
-## 📦 Project Structure
+## Project Structure
 
 ```
 .
