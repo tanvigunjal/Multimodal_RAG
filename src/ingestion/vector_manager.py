@@ -37,19 +37,24 @@ class VectorStoreManager:
             logger.warning("No chunks provided to add to the vector store.")
             return
 
-        # Convert dictionaries to LangChain Document objects and flatten metadata
+        # Convert dictionaries to LangChain Document objects, preserving metadata structure
         langchain_docs: List[Document] = []
         for chunk in document_chunks:
+            # Preserve the nested structure but ensure we have defaults
             metadata = {
-                **chunk.get("document_metadata", {}),
-                **chunk.get("structural_metadata", {}),
-                **chunk.get("multimodal_metadata", {}),
-                "chunk_id": chunk.get("chunk_id"),
+                "document_metadata": chunk.get("document_metadata", {
+                    "file_name": "Unknown",
+                    "file_path": None,
+                    "relative_path": None
+                }),
+                "structural_metadata": chunk.get("structural_metadata", {
+                    "page_number": 1,
+                    "section_heading": None,
+                    "element_type": "text"
+                }),
+                "multimodal_metadata": chunk.get("multimodal_metadata", {}),
+                "chunk_id": chunk.get("chunk_id")
             }
-            # Clean up nested structures for top-level access in Qdrant
-            metadata.pop("document_metadata", None)
-            metadata.pop("structural_metadata", None)
-            metadata.pop("multimodal_metadata", None)
             
             langchain_docs.append(
                 Document(page_content=chunk.get("raw_content", ""), metadata=metadata)

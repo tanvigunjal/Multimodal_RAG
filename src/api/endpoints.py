@@ -383,12 +383,16 @@ async def query_invoke_endpoint(request: QueryRequest, current_user: str = Depen
         sources = []
         for node in response_data["source_nodes"]:
             md = node.metadata or {}
+            doc_metadata = md.get("document_metadata", {})
+            structural_metadata = md.get("structural_metadata", {})
+            
             source_data = {
-                "type": md.get("element_type"),
-                "file_name": md.get("file_name"),
-                "page_number": md.get("page_number"),
-                "content": md.get("table_html") if md.get("element_type") == "table" else None,
-                "image_path": os.path.basename(md.get("image_path")) if md.get("element_type") == "image" and md.get("image_path") else None,
+                "type": structural_metadata.get("element_type"),
+                "file_name": doc_metadata.get("file_name"),
+                "file_path": doc_metadata.get("relative_path"),  # Include the formatted relative path
+                "page_number": structural_metadata.get("page_number"),
+                "content": md.get("table_html") if structural_metadata.get("element_type") == "table" else None,
+                "image_path": os.path.basename(md.get("image_path")) if structural_metadata.get("element_type") == "image" and md.get("image_path") else None,
             }
             sources.append(source_data)
         
@@ -433,14 +437,71 @@ async def stream_rich_generator(response: StreamingRAGResponse) -> AsyncGenerato
     # 1. Yield a 'sources' event with all source documents
     sources = []
     for node in response.source_nodes:
-        md = node.metadata or {}
-        sources.append({
-            "type": md.get("element_type"),
-            "file_name": md.get("file_name"),
-            "page_number": md.get("page_number"),
-            "content": md.get("table_html") if md.get("element_type") == "table" else None,
-            "image_path": os.path.basename(md.get("image_path")) if md.get("element_type") == "image" and md.get("image_path") else None,
-        })
+        try:
+            md = node.metadata or {}
+            doc_metadata = md.get("document_metadata", {})
+            structural_metadata = md.get("structural_metadata", {})
+            multimodal_metadata = md.get("multimodal_metadata", {})
+            
+            # Extract file information from metadata
+            file_path = md.get("file_path")
+            file_name = md.get("file_name")
+            
+            # Basic validation
+            if not file_path or not file_name:
+                logger.warning(f"Missing file information in metadata: {md}")
+                # Try to reconstruct from available information
+                if file_path and not file_name:
+                    file_name = os.path.basename(file_path)
+                elif not file_path and file_name:
+                    # Construct default path pattern
+                    file_path = f"/app/data/uploads/{md.get('chunk_id', 'unknown').split('_')[0]}/{file_name}"
+                else:
+                    # Use chunk_id as fallback
+                    chunk_id = md.get("chunk_id", "unknown")
+                    file_name = f"{chunk_id}.txt"
+                    file_path = f"/app/data/uploads/unknown/{file_name}"
+                
+            # For PDFs, ensure the path is correct
+            if file_name.lower().endswith('.pdf'):
+                if not file_path.startswith('/app/data/uploads/'):
+                    logger.warning(f"Invalid PDF path format: {file_path}")
+                    file_path = None  # Will be shown as non-clickable in UI
+
+            # Determine content type and extract relevant metadata
+            element_type = structural_metadata.get("element_type", "text")
+            content = None
+            image_path = None
+            
+            if element_type == "table":
+                content = multimodal_metadata.get("table_html")
+            elif element_type == "image":
+                image_path = multimodal_metadata.get("image_path")
+                if image_path:
+                    image_path = os.path.basename(image_path)
+
+            # Build source metadata matching the Qdrant structure
+            source_data = {
+                "type": md.get("element_type", "text"),
+                "modality": md.get("modality", "text"),
+                "file_name": file_name,
+                "file_path": file_path,
+                "page_number": md.get("page_number", 1),
+                "section_heading": md.get("section_heading"),
+                "figure_id": md.get("figure_id"),
+                "chunk_id": md.get("chunk_id"),
+                "content": content if md.get("element_type") == "table" else None,
+                "image_path": image_path if md.get("element_type") == "image" else None,
+                "relevance_score": float(node.score) if hasattr(node, 'score') else None
+            }
+            
+            # Filter out None values
+            source_data = {k: v for k, v in source_data.items() if v is not None}
+            sources.append(source_data)
+        except Exception as e:
+            logger.error(f"Error processing source node: {e}", exc_info=True)
+            logger.debug(f"Node metadata: {node.metadata}")
+            continue
     
     # The data field must be a string, so we dump the list to a JSON string
     sources_json = json.dumps(sources)
