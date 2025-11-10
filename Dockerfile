@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     tesseract-ocr \
     libgl1-mesa-glx \
+    python3-dev \
+    libffi-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy only the requirements file to leverage Docker cache
