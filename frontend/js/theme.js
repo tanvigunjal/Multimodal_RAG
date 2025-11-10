@@ -9,7 +9,7 @@ export function initTheme() {
   
   const KEY = 'app-theme';
   // Media query to check for OS-level dark mode preference
-  const prefersDarkMQ = window.matchMedia('(prefers-color-scheme: dark)');
+  const prefersDarkMQ = window.matchMedia('(prefers-color-scheme: light)');
   
   // Determine the initial theme
   const savedTheme = localStorage.getItem(KEY);
