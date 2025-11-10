@@ -22,9 +22,42 @@ from src.utils.logger import get_logger
 from src.core.agent import retrieval_agent, StreamingRAGResponse
 from src.ingestion.orchestrator import AgenticIngestionOrchestrator
 from src.core.tools import TitleGenerator
+from src.api.auth import (
+    UserLogin,
+    UserResponse,
+    verify_password,
+    create_access_token,
+    get_current_user,
+    USERS
+)
 
-router = APIRouter(prefix="/v1", tags=["Ingestion"])
+# Create separate routers for different endpoint groups
+auth_router = APIRouter(prefix="/v1/auth", tags=["Authentication"])
+ingestion_router = APIRouter(prefix="/v1", tags=["Ingestion"])
 logger = get_logger(__name__)
+
+# Authentication endpoints
+@auth_router.post("/login", response_model=UserResponse)
+async def login(user_data: UserLogin):
+    if user_data.email not in USERS:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password"
+        )
+    
+    stored_password_hash = USERS[user_data.email]
+    if not verify_password(user_data.password, stored_password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password"
+        )
+    
+    access_token = create_access_token(user_data.email)
+    return {"email": user_data.email, "token": access_token}
+
+@auth_router.get("/me")
+async def read_users_me(current_user: str = Depends(get_current_user)):
+    return {"email": current_user}
 
 class JobStatus(str, Enum):
     QUEUED = "QUEUED"
@@ -201,12 +234,12 @@ async def _process_bg(job_id: str, doc_path: str, figures_dir: str, file_name: s
 
 # ------------------------ Endpoints ------------------------
 
-@router.get("/health", response_model=HealthResponse)
+@ingestion_router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse()
 
-@router.get("/job-status/{job_id}", response_model=JobStatusResponse)
-async def get_job_status(job_id: str):
+@ingestion_router.get("/job-status/{job_id}", response_model=JobStatusResponse)
+async def get_job_status(job_id: str, current_user: str = Depends(get_current_user)):
     """Get the status of a specific upload job."""
     if job_id not in JOB_STATUSES:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
@@ -215,10 +248,11 @@ async def get_job_status(job_id: str):
     logger.info(f"Status request for job {job_id}: {status}")
     return JobStatusResponse(**status)
 
-@router.post("/upload-documents", response_model=UploadResponse)
+@ingestion_router.post("/upload-documents", response_model=UploadResponse)
 async def upload_documents(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(..., description="PDF/TXT/MD/DOCX"),
+    current_user: str = Depends(get_current_user),
 ):
     try:
         uploads_dir, figures_dir = _dirs()
@@ -264,10 +298,11 @@ async def upload_documents(
             content={"detail": "An unexpected error occurred during file upload."},
         )
 
-@router.post("/upload-zip", response_model=UploadResponse)
+@ingestion_router.post("/upload-zip", response_model=UploadResponse)
 async def upload_zip(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(..., description="ZIP with allowed files"),
+    current_user: str = Depends(get_current_user),
 ):
     uploads_dir, figures_dir = _dirs()
     raw_zip = await file.read()
@@ -330,8 +365,8 @@ class QueryRequest(BaseModel):
     query: str
 
 # === Endpoint 1: Rich, Non-Streaming (Invoke) ===
-@router.post("/query/invoke", summary="Get a final answer with sources (non-streaming)")
-async def query_invoke_endpoint(request: QueryRequest):
+@ingestion_router.post("/query/invoke", summary="Get a final answer with sources (non-streaming)")
+async def query_invoke_endpoint(request: QueryRequest, current_user: str = Depends(get_current_user)):
     """
     Receives a query and returns a single JSON response containing the complete
     answer and the source documents. This is a non-streaming, "invoke" style endpoint.
@@ -373,8 +408,8 @@ async def stream_text_generator(response: StreamingRAGResponse) -> AsyncGenerato
     for token in response.response_gen:
         yield token
 
-@router.post("/query/stream-text", summary="Get a simple streaming text answer")
-async def query_stream_text_endpoint(request: QueryRequest):
+@ingestion_router.post("/query/stream-text", summary="Get a simple streaming text answer")
+async def query_stream_text_endpoint(request: QueryRequest, current_user: str = Depends(get_current_user)):
     """
     Receives a query and returns a simple streaming text response (media_type="text/plain").
     """
@@ -420,8 +455,8 @@ async def stream_rich_generator(response: StreamingRAGResponse) -> AsyncGenerato
     # 3. Yield an 'end' event to signal completion
     yield "event: end\ndata: Stream ended\n\n"
 
-@router.get("/query/stream-rich", summary="Get a rich streaming answer with sources (SSE)")
-async def query_stream_rich_endpoint(query: str = Query(..., min_length=1)):
+@ingestion_router.get("/query/stream-rich", summary="Get a rich streaming answer with sources (SSE)")
+async def query_stream_rich_endpoint(query: str = Query(..., min_length=1), current_user: str = Depends(get_current_user)):
     """
     Receives a query via URL parameter and returns a rich streaming response
     using Server-Sent Events. This endpoint is designed for use with EventSource.
@@ -439,10 +474,11 @@ async def query_stream_rich_endpoint(query: str = Query(..., min_length=1)):
         logger.error(f"Error in /query/stream-rich endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
 
-@router.post("/query/summarize", response_model=TitleResponse)
+@ingestion_router.post("/query/summarize", response_model=TitleResponse)
 async def summarize_query_endpoint(
     request: QueryRequest,
-    title_generator: TitleGenerator = Depends(get_title_generator)
+    title_generator: TitleGenerator = Depends(get_title_generator),
+    current_user: str = Depends(get_current_user)
 ):
     """
     Receives a query and returns a three-word title.
@@ -456,8 +492,8 @@ async def summarize_query_endpoint(
         logger.error(f"Error in /query/summarize endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
 
-@router.get("/image", summary="Serve an image from the figures directory")
-async def get_image(path: str = Query(..., description="The filename of the image to retrieve")):
+@ingestion_router.get("/image", summary="Serve an image from the figures directory")
+async def get_image(path: str = Query(..., description="The filename of the image to retrieve"), current_user: str = Depends(get_current_user)):
     """
     Serves an image from the 'figures' directory. This endpoint is protected
     against directory traversal attacks.
@@ -490,8 +526,8 @@ async def get_image(path: str = Query(..., description="The filename of the imag
         logger.error(f"Error serving image '{path}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="An internal error occurred while serving the image.")
 
-@router.get("/pdf", summary="Serve a PDF from the uploads directory")
-async def get_pdf(path: str = Query(..., description="The sha256 subfolder and filename of the PDF to retrieve")):
+@ingestion_router.get("/pdf", summary="Serve a PDF from the uploads directory")
+async def get_pdf(path: str = Query(..., description="The sha256 subfolder and filename of the PDF to retrieve"), current_user: str = Depends(get_current_user)):
     """
     Serves a PDF file from the uploads directory. This endpoint is protected
     against directory traversal attacks.
