@@ -714,6 +714,31 @@ body {
 .toolbar-actions { display: flex; gap: 14px; align-items: center; }
 .tool { display: flex; align-items: center; gap: 8px; }
 .tool-label { font-size: 12px; color: var(--muted); }
+
+/* Style for the logout button in toolbar */
+.toolbar-actions .tool .icon-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink);
+  background: color-mix(in oklab, var(--primary), transparent 92%);
+  border: 1px solid color-mix(in oklab, var(--primary), transparent 85%);
+  cursor: pointer;
+  font-size: 1.1rem;
+  box-shadow: none;
+  will-change: transform, background-color, color, box-shadow;
+}
+
+.toolbar-actions .tool .icon-btn:hover {
+  background-color: var(--primary);
+  color: white;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px color-mix(in oklab, var(--primary), transparent 80%);
+}
+
 .chat-window {
   flex: 1; overflow: auto; padding: 22px 28px;
   min-height: 0;
