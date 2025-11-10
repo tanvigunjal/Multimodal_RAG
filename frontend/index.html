@@ -8,6 +8,18 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"/>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/showdown/2.1.0/showdown.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script type="module">
+    import { initializeApp } from './js/init.js';
+    
+    // Initialize app on load
+    window.addEventListener('DOMContentLoaded', initializeApp);
+  </script>
+  <style>
+    /* Hide app until initialization is complete */
+    .app-frame {
+      visibility: hidden;
+    }
+  </style>
 </head>
 <body>
   <div class="app-frame">
@@ -27,6 +39,9 @@
           </button>
           <button class="icon-btn" id="search-btn" title="Search Chats">
             <i class="fa-solid fa-magnifying-glass"></i>
+          </button>
+          <button class="icon-btn" id="logout-btn" title="Logout">
+            <i class="fa-solid fa-sign-out-alt"></i>
           </button>
         </div>
 
