@@ -12,6 +12,12 @@ This project is a sophisticated, production-ready Retrieval-Augmented Generation
 - **Containerized Deployment:** Fully containerized with Docker and Docker Compose for easy setup, portability, and scalability.
 - **Production-Ready:** Includes health checks, environment-based configuration, and a scalable architecture.
 
+## User Interface
+
+![Multimodal RAG UI](images/UI.png)
+
+The application features a clean and intuitive web interface that provides smooth interaction with the RAG system.
+
 ## Architecture Overview
 
 The application is composed of three main services orchestrated by Docker Compose:
