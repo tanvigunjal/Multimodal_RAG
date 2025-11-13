@@ -73,6 +73,8 @@ async function handleLogin(event) {
         console.log('Login response:', response);
         
         if (response && response.token) {
+            // Store token in localStorage
+            localStorage.setItem('authToken', response.token);
             window.location.href = `${window.location.origin}/`;
         } else {
             loginError.textContent = 'Invalid login response from server';

@@ -374,6 +374,12 @@ async def query_invoke_endpoint(request: QueryRequest, current_user: str = Depen
     if not request.query:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
     try:
+        # Check if the query is a generic greeting
+        greetings = ["hello", "hi", "hey", "good morning", "good afternoon", "good evening", "howdy"]
+        if request.query.lower().strip("!.") in greetings:
+            return JSONResponse(content={"answer": "Hello! How can I assist you today?"})
+
+        # Proceed with retrieval and response generation for other queries
         # The agent's run method handles the entire workflow
         streaming_response: StreamingRAGResponse = retrieval_agent.run(request.query)
         
@@ -385,21 +391,23 @@ async def query_invoke_endpoint(request: QueryRequest, current_user: str = Depen
             md = node.metadata or {}
             doc_metadata = md.get("document_metadata", {})
             structural_metadata = md.get("structural_metadata", {})
-            
             source_data = {
                 "type": structural_metadata.get("element_type"),
                 "file_name": doc_metadata.get("file_name"),
-                "file_path": doc_metadata.get("relative_path"),  # Include the formatted relative path
+                "file_path": doc_metadata.get("relative_path"),
                 "page_number": structural_metadata.get("page_number"),
                 "content": md.get("table_html") if structural_metadata.get("element_type") == "table" else None,
                 "image_path": os.path.basename(md.get("image_path")) if structural_metadata.get("element_type") == "image" and md.get("image_path") else None,
             }
             sources.append(source_data)
-        
+
         rich_response = {
-            "answer": response_data["response"],
-            "sources": sources
+            "answer": response_data["response"]
         }
+        # Only include sources if they have valid and relevant metadata
+        valid_sources = [s for s in sources if s.get("file_name") or s.get("file_path") or s.get("page_number") or s.get("content") or s.get("image_path")]
+        if valid_sources:
+            rich_response["sources"] = valid_sources
         return JSONResponse(content=rich_response)
     except Exception as e:
         logger.error(f"Error in /query/invoke endpoint: {e}", exc_info=True)
@@ -420,6 +428,13 @@ async def query_stream_text_endpoint(request: QueryRequest, current_user: str = 
     if not request.query:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
     try:
+        # Check if the query is a generic greeting
+        greetings = ["hello", "hi", "hey", "good morning", "good afternoon", "good evening", "howdy"]
+        if request.query.lower().strip("!.") in greetings:
+            async def greeting_stream():
+                yield "Hello! How can I assist you today?"
+            return StreamingResponse(greeting_stream(), media_type="text/plain")
+
         # Use the unified retrieval agent
         streaming_response = retrieval_agent.run(request.query)
         return StreamingResponse(stream_text_generator(streaming_response), media_type="text/plain")
@@ -529,6 +544,19 @@ async def query_stream_rich_endpoint(query: str = Query(..., min_length=1), curr
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
     try:
+        # Check if the query is a generic greeting
+        greetings = ["hello", "hi", "hey", "good morning", "good afternoon", "good evening", "howdy"]
+        if query.lower().strip("!.") in greetings:
+            async def greeting_stream():
+                # Yield a 'sources' event with empty sources
+                yield f"event: sources\ndata: []\n\n"
+                # Yield a 'token' event with the greeting
+                data = json.dumps("Hello! How can I assist you today?")
+                yield f"event: token\ndata: {data}\n\n"
+                # Yield an 'end' event
+                yield "event: end\ndata: Stream ended\n\n"
+            return StreamingResponse(greeting_stream(), media_type="text/event-stream")
+
         streaming_response = retrieval_agent.run(query)
         return StreamingResponse(stream_rich_generator(streaming_response), media_type="text/event-stream")
     except Exception as e:

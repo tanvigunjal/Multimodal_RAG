@@ -110,15 +110,32 @@ export function initUploads() {
       updateProgress('Preparing to upload files...', 5);
       updateProgress('Uploading files to server...', 25);
 
+      const authToken = localStorage.getItem('authToken'); // Retrieve token from local storage
+      if (!authToken) {
+        throw new Error('Not authenticated. Please log in again.');
+      }
+
       const response = await fetch(`${API_BASE_URL}${endpoint}`, {
         method: 'POST',
         body: formData,
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
       });
 
-      const result = await response.json();
+      const rawResponseText = await response.text(); // Read the response body as text
+      console.error('Server error details:', rawResponseText); // Log the raw response text
+
+      let result;
+      try {
+        result = JSON.parse(rawResponseText); // Parse the text into JSON
+      } catch (parseError) {
+        console.error('Failed to parse response as JSON:', parseError);
+        throw new Error('Invalid server response format.');
+      }
 
       if (!response.ok) {
-        throw new Error(result.detail || 'Upload failed.');
+        throw new Error(result.detail || 'An unexpected error occurred during file upload.');
       }
 
       const pollJobStatus = async (jobs) => {
@@ -131,7 +148,11 @@ export function initUploads() {
           try {
             const statuses = await Promise.all(
               jobs.map(job => 
-                fetch(`${API_BASE_URL}/job-status/${job.job_id}`)
+                fetch(`${API_BASE_URL}/job-status/${job.job_id}`, {
+                  headers: {
+                    'Authorization': `Bearer ${authToken}`,
+                  },
+                })
                   .then(r => r.json())
                   .catch(e => ({ 
                     status: "FAILED", 
